@@ -1,0 +1,51 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This notebook is for looking at a scatter plot (3D) of the juction and spanning read counts with FFPM confidence scores for the sarcoma fusion data.
+
+```{r libraries}
+library(tidyverse)
+library(openxlsx)
+library(plotly)
+```
+
+```{r preppring_data}
+#import data
+fusion_dat = readRDS("Analysis_folders/Fusions/data/fusion_list.rds")
+clinical = read.xlsx("Analysis_folders/M2Gen_Final_Clinical/ClinicalLinkagewithFiles_20221103_niceNames.xlsx")
+clin2 = clinical %>% 
+  filter(!is.na(rna_file), #get only samples that we have mutations for
+         tumor_germline == "Tumor", #remove the germline samples
+         is.na(sarcoma)) %>% #make sure only to keep those that don't have a flag for not being sarcoma
+  mutate(Tumor_Sample_Barcode = gsub("\\..*", "", somatic_file)) %>% #extract the sample ID from the file name
+  group_by(sarcoma_collapsed) %>% #group by sarcoma histology that Andrew Collapsed
+  mutate(new_collapsed = ifelse(n() < 5, "other", sarcoma_collapsed), #if there are less than 5 samples, make new collapsed "other"
+         nice_name_collapsed = ifelse(n() < 5, "Other", nice_name)) %>% #if there are less than 5 samples, group them to Other
+  ungroup()
+
+#make df from list
+fusion_df = lapply(seq(fusion_dat), function(x){
+  df = fusion_dat[[x]] %>% 
+    rename("FusionName" = 1) %>%
+    mutate(tsb = names(fusion_dat)[x]) %>%
+    mutate_all(as.character)
+  return(df)
+}) %>%
+  do.call(bind_rows, .) %>%
+  left_join(clin2, by = c("tsb" = "rna_seq")) %>% 
+    mutate(Class = case_when(grepl("EWSR", FusionName) & nice_name_collapsed == "Ewing Sarcoma" ~ "EWSR - Ewing",
+                             grepl("SSX", FusionName) & nice_name_collapsed == "Synovial Sarcoma" ~ "SSX - Synovial",
+                             T ~ "Other"))
+saveRDS(fusion_df, "Analysis_folders/Fusions/data/All_fusion_table.rds")
+
+```
+
+Making the scatter plot
+
+```{r, fig.width = 10, fig.height = 10}
+fig = plot_ly(fusion_df, x = ~JunctionReadCount, y = ~SpanningFragCount, z = ~FFPM, color = ~Class)
+fig = fig %>% add_markers(opacity = 0.5)
+fig
+```
