@@ -8,5 +8,4 @@ The .fastq files from Illumina outputs were processed using Space Ranger. The Se
 
 ## `gene_expression_analyses`
 The `Gene expression analyses` folder contains code to perform exploratory data analysis, unsupervised clustering, differential gene expression, and gene set enrichment analysis of the sarcoma RNAseq samples in the cohort. Code is also provided for immune cell type deconvolution and survival analysis using Cox models.
-* `gene_expression_analyses/sarcoma_avatar_rnaseq_data_exploration_gene_level.Rmd`: Code to assess number and distribution of samples in the cohort.
-* `gene_expression_analyses/sarcoma_avatar_rnaseq_mcpdeconv`: Code to estimate relative abundance of immune cell types using MCPdeconv RNAseq deconvolution.
+* `gene_expression_analyses_code/sarcoma_manuscript_figures.Rmd`: Code to to reproduce the figures pertaining to RNAseq analysis. The script takes outputs from other scripts included here.
