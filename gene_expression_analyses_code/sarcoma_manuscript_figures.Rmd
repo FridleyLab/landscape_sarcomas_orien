@@ -13,8 +13,8 @@ library('survminer')
 
 ### Data read and preparation
 ```{r include=F}
-# Read clinical data and patient keys
-key_fp = '../data/ClinicalLinkagewithFiles_20230731_niceNames.xlsx'
+# Read clinical data and patient keys (See dummy example included in repository)
+key_fp = '../data/ClinicalLinkagewithFiles_niceNames.xlsx'
 key_df = readxl::read_excel(key_fp, sheet=1, .name_repair='minimal') %>%
   janitor::clean_names() %>%
   mutate(rna_seq_mod=tolower(.[['rna_seq']]) %>%
@@ -32,13 +32,13 @@ rm(key_fp) # Clean environment
 ```{r include=F}
 # Samples removed from clinical key data frame
 key_df = key_df %>% 
-  filter(!(rna_seq_mod %in% c("sl362871", "sl482620"))) %>% # Not true sarcomas (Andrew's opinion)
-  filter(rna_seq_mod != "sl424998") # No library prep info on meta data, and unable to apply Combat
+  filter(!(rna_seq_mod %in% c("sl362871", "sl482620"))) %>% # Not sarcomas
+  filter(rna_seq_mod != "sl424998") # No library prep info on meta data - Unable to apply Combat
 ```
 
 ```{r include=F}
 # Merge key with institution of origin for samples
-inst_fp = '../data/SiteAnnotationSarcomaAvatars_19PRJ024RIG-SAR.xlsx'
+inst_fp = '../data/SiteAnnotationSarcomaAvatars.xlsx'
 inst_df = readxl::read_excel(inst_fp) %>%
   janitor::clean_names()
 
