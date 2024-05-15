@@ -17,15 +17,12 @@ Fusion data was processed after all other scripts were written then used to upda
 
 ## [`gene_expression_analyses`](https://github.com/FridleyLab/landscape_sarcomas_orien/tree/main/gene_expression_analyses_code)
 The `Gene expression analyses` folder contains code to perform exploratory data analysis, unsupervised clustering, differential gene expression, and gene set enrichment analysis of the sarcoma RNAseq samples in the cohort. Code is also provided for immune cell type deconvolution and survival analysis using Cox models.
-<<<<<<< HEAD
 * `gene_expression_analyses_code/sarcoma_manuscript_figures.Rmd`: Code to reproduce the figures pertaining to RNAseq analysis. The script takes outputs from other scripts included here.
 * `gene_expression_analyses_code/sarcoma_avatar_rnaseq_mcpdeconv.Rmd`: Code to reproduce the immune cell type abundance estimation using devonvolution with MCPcounter.
 * `gene_expression_analyses_code/differential_expression_immunegroups.Rmd`: Code to reproduce the differential gene expression analysis among the MCPcounter-predicted groups.
 * `gene_expression_analyses_code/differential_expression_histologies.Rmd`: Code to reproduce the differential gene expression analysis among the histologies in the data set.
 * `gene_expression_analyses_code/gene_set_enrichment_immunegroups.Rmd`: Code to reproduce the estimation of gene set enrichment scores for each MCPcounter-predicted group.
 * `gene_expression_analyses_code/gene_set_enrichment_histologies.Rmd`: Code to reproduce the estimation of gene set enrichment scores for each histology in the data set.
-=======
-* `gene_expression_analyses_code/sarcoma_manuscript_figures.Rmd`: Code to to reproduce the figures pertaining to RNAseq analysis. The script takes outputs from other scripts included here.
 
 # Analysis Softwares
 
@@ -53,8 +50,16 @@ For somatic mutations, copy number, and fusions:
   - ComplexHeatmap v2.16.0
   - pbmcapply v1.5.1
   - patchwork v1.1.3
+  - MCPcounter v1.2.0
+  - fgsea v1.28.0
+  - survival v3.5
+  - survminer v0.4.9
+  - limma v3.58.1
+  - umap v0.2.10
+  - msigdbr v7.5.1
+  - dynamicTreeCut v1.63
 - Python libraries
   --
   - HTSeq v2.0.2
   - pandas v1.5.2
->>>>>>> 6d0270198b9582aea6c12b81720ee1c54742e6c3
+
