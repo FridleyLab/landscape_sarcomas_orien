@@ -6,7 +6,6 @@ title: "Figures RNAseq analysis sarcoma"
 library('tidyverse')
 library('umap')
 library('ComplexHeatmap')
-library('MCPcounter')
 library('survival')
 library('survminer')
 ```
@@ -51,7 +50,7 @@ rm(inst_fp, inst_df) # Clean environment
 ```
 
 ```{r include=F}
-# Read tumor mutation burden data (prepared by Alex Soupir)
+# Read tumor mutation burden data (prepared by Dr. Alex Soupir)
 # Add data to clinical key
 tmb_fp = '../data/Somatic_MutationsPerMB_10rFiltered.csv'
 key_df = read_delim(tmb_fp, delim=',', show_col_types=F, name_repair='minimal') %>%
@@ -69,6 +68,7 @@ rm(tmb_fp) # Clean environment
 
 ```{r include=F}
 # Read DTC immune clusters assignments (generated with MCPcounter immune scores)
+# Refer to script "sarcoma_avatar_rnaseq_mcpdeconv.Rmd"
 # Add data to clinical key
 dtc_fp = '../data/immune_groups_deconvolution/mcpcounter_immune_clusters.csv'
 key_df = read_delim(dtc_fp, delim=',', show_col_types=F, name_repair='minimal') %>%
@@ -89,7 +89,7 @@ rm(sarcoma_abundant) # Clean env
 ```
 
 ```{r include=F}
-# Read gene expression summarized from isoforms
+# Read gene expression summarized from isoforms (i.e., sum of isoforms for a given gene)
 # Remove counts from the misc_RNA classes rRNAs, 'Y_RNA' and 'Metazoa_SRP'
 # Remove pseudogenes, microRNAs, and snoRNAs
 counts_sum_df = data.table::fread(file='../data/transformed_gene_expr_sum_isoforms.csv') %>%
@@ -99,7 +99,8 @@ counts_sum_df = data.table::fread(file='../data/transformed_gene_expr_sum_isofor
 ```
 
 ```{r include=F}
-# Histology color palette
+# Histology color palette.
+# R object containing color palette used in CNV analyses
 col_pal_hist = readRDS('../data/collapsed_histology_color-vec.rds')
 names(col_pal_hist) = gsub('other', 'Other', names(col_pal_hist))
 
@@ -150,9 +151,6 @@ umap_df = umap_res[['layout']] %>%
                      specimen_type_collapsed, site_recode, nice_name_reassigned), by='sample')
 
 rm(umap_res) # Clean env
-
-# Save UMAP data frame to share with Nathan Seligson
-#write.csv(umap_df, '../results/umap_coordinates_and_variables_nathanseligson_aug282023.csv', quote=F, row.names=F)
 ```
 
 ```{r include=F}
@@ -381,10 +379,7 @@ hm_col2 = circlize::colorRamp2(c(-3, -1, 0, 1, 3), c("darkblue", "blue", "white"
 gexpr_hm = Heatmap(counts_hm_mtx[, match(rownames(annots_df_ordered), colnames(counts_hm_mtx))], 
                    cluster_columns=F, cluster_rows=F, 
                    show_row_names=T, show_column_names=F, 
-                   #row_title='Log-normalized\ngene expression',
                    heatmap_legend_param=list(title="Scaled\ngene expr."),
-                   #show_row_dend=F,
-                   #show_column_dend=F,
                    row_names_side="left",
                    column_split=annots_df_ordered[['mcpcounter_dtc']],
                    bottom_annotation=hm_ann,
@@ -407,8 +402,6 @@ hm_list = mcpctr_hm %v% gexpr_hm
 pdf('../docs/figures_manuscript/FigureXX_IMMUNEGRPS_A.pdf', width=10, height=12)
 print(draw(hm_list))
 dev.off()
-
-#rm(mcpctr_hm, gexpr_hm, hm_list, hm_ann_bar) # Clean env
 ```
 
 ### FigureXX_IMMUNEGRPS_B
@@ -745,7 +738,6 @@ umap_expr_df = umap_df %>%
 up5 = ggplot(umap_expr_df) +
   geom_point(aes(x=V1, y=V2, color=norm_expr), size=0.3) +
   labs(color='Norm.\nexpr') +
-  #khroma::scale_color_sunset(midpoint=median(umap_expr_df[['norm_expr']])) +
   scale_color_gradientn(colours=c("darkblue", "blue", "white", "red", "darkred"), values=c(0, 0.2, 0.5, 0.8, 1)) +
   coord_fixed(1) +
   theme_void() +

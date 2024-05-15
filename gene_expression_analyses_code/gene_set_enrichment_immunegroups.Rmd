@@ -1,0 +1,251 @@
+---
+title: "fgsea using ranked DE genes amomg immune groups"
+---
+
+```{r echo=F, include=F}
+library('tidyverse')
+library('fgsea')
+library('msigdbr')
+```
+
+### Data read and preparation
+```{r include=F}
+# Read clinical data and patient keys
+key_fp = '../data/ClinicalLinkagewithFiles_20230731_niceNames.xlsx'
+key_df = readxl::read_excel(key_fp, sheet=1, .name_repair='minimal') %>%
+  #select(-1) %>%# Remove columns with row numbers
+  janitor::clean_names() %>%
+  mutate(rna_seq_mod=tolower(.[['rna_seq']]) %>%
+           str_replace(., '\\-', '_')) %>%
+  filter(disease_type == 'SAR - Sarcoma') %>%
+  filter(rna_seq_mod != 'na')
+
+rm(key_fp) # Clean environment
+```
+
+```{r include=F}
+# Samples removed from clinical key data frame
+key_df = key_df %>% 
+  filter(!(rna_seq_mod %in% c("sl362871", "sl482620"))) %>% # Not sarcomas
+  filter(rna_seq_mod != "sl424998") # No library prep info on meta data - Unable to apply Combat
+```
+
+```{r include=F}
+# Read DTC immune clusters assignments (generated with MCPcounter immune scores)
+# Refer to script "sarcoma_avatar_rnaseq_mcpdeconv.Rmd"
+# Add data to clinical key
+dtc_fp = '../data/immune_groups_deconvolution/mcpcounter_immune_clusters.csv'
+key_df = read_delim(dtc_fp, delim=',', show_col_types=F, name_repair='minimal') %>%
+  select(c('samplename', 'immunegroup')) %>%
+  left_join(key_df, ., by=c('rna_seq_mod'='samplename'))
+
+rm(dtc_fp) # Clean environment
+```
+
+```{r include=F}
+# Recode sarcoma types with less than ten samples (many sarcoma types will be difficult to visualize)
+sarcoma_abundant = names(table(key_df[['changed_diagnosis_clean']]))[table(key_df[['changed_diagnosis_clean']]) >= 5]
+key_df = key_df %>%
+  mutate(sarcoma_collapsed=case_when(changed_diagnosis_clean %in% sarcoma_abundant ~ changed_diagnosis_clean, TRUE ~ 'other')) %>%
+  mutate(nice_name_reassigned=case_when(sarcoma_collapsed == 'other' ~ 'Other', TRUE ~ nice_name_reassigned))
+
+rm(sarcoma_abundant) # Clean env
+```
+
+```{r include=F}
+# Get gene sets
+gene_sets = msigdbr(species='Homo sapiens')
+hmk_sets = gene_sets[gene_sets[['gs_cat']] == "H", ]
+keg_sets = gene_sets[gene_sets[['gs_subcat']] == "CP:KEGG", ]
+rct_sets = gene_sets[gene_sets[['gs_subcat']] == "CP:REACTOME", ]
+
+# Convert gene set dataframe to list
+# The result is a named list. The names of the list are the names of each gene set
+# The contents of each list element are the gene names within each gene set
+hmk_sets = split(x=hmk_sets[['human_gene_symbol']], f=hmk_sets[['gs_name']])
+keg_sets = split(x=keg_sets[['human_gene_symbol']], f=keg_sets[['gs_name']])
+rct_sets = split(x=rct_sets[['human_gene_symbol']], f=rct_sets[['gs_name']])
+
+rm(gene_sets) # Clean env
+```
+
+# GSEA ON DE AMONG IMMUNEGROUPS
+```{r include=F}
+# Read DE genes and rank statistics (p-value, logFC)
+de_fp = '../results/differential_expression_immunegroups/diff_expr_genes_immunegroups.xlsx'
+de_res = list()
+grps = openxlsx::getSheetNames(de_fp)
+for(i in grps){
+  de_res[[i]] = readxl::read_excel(de_fp, sheet=i) %>% filter(adj.P.Val < 0.1)
+}
+
+rm(de_fp, grps) # Clean env 
+```
+
+```{r include=F}
+# Calculate scores
+fgsea_res = list()
+for(i in names(de_res)){
+  logfc = de_res[[i]][['logFC']]
+  names(logfc) = de_res[[i]][['gene']]
+  
+  fgsea_hmk = fgsea(pathways=hmk_sets, stats=logfc, minSize=15, eps=0, nPermSimple=10000)
+  fgsea_keg = fgsea(pathways=keg_sets, stats=logfc, minSize=15, eps=0, nPermSimple=10000)
+  fgsea_rct = fgsea(pathways=rct_sets, stats=logfc, minSize=15, eps=0, nPermSimple=10000)
+  
+  fgsea_res[[i]] = list(hmk=fgsea_hmk, keg=fgsea_keg, rct=fgsea_rct)
+  
+  rm(fgsea_hmk, fgsea_keg, fgsea_rct, logfc) # Clean env
+  
+  openxlsx::write.xlsx(fgsea_res[[i]], paste0('../results/gene_set_enrichment_immunegroups/gene_set_enrichment_deg_immunegroup_', i, '.xlsx'))
+}
+
+rm(de_res) # Clean env
+```
+
+```{r include=F}
+# Compile all results in long format
+df_tmp = tibble()
+for(i in names(fgsea_res)){
+  for(j in names(fgsea_res[[i]])){
+    
+        # Get pathway sizes
+    if(j == 'hmk'){
+      geneset_tmp = enframe(unlist(lapply(hmk_sets, length))) %>% 
+        rename(pathway=name, gene_set_size=value)
+    } else if(j == 'keg'){
+      geneset_tmp = enframe(unlist(lapply(keg_sets, length))) %>% 
+        rename(pathway=name, gene_set_size=value)
+    } else if(j == 'rct'){
+      geneset_tmp = enframe(unlist(lapply(rct_sets, length))) %>% 
+        rename(pathway=name, gene_set_size=value)
+    }
+    
+    df_tmp = bind_rows(df_tmp, fgsea_res[[i]][[j]] %>% filter(padj < 0.05) %>%
+                         select(c('pathway', 'padj', 'NES', 'size')) %>%
+                         add_column(immunegroup=i, dbase=j) %>%
+                         mutate(order_bubble=NES-0) %>%
+                         left_join(., geneset_tmp, by='pathway') %>%
+                         mutate(percent_set_coverage=(size/gene_set_size)*100))
+  }
+}
+
+# Generate "bubble" plots of enrichment scores
+bb_p = list()
+for(j in c('hmk', 'keg', 'rct')){
+  bb_p[[j]] = ggplot(df_tmp %>% filter(dbase == j)) +
+    geom_point(aes(x=NES, y=reorder(pathway, order_bubble), color=NES, size=percent_set_coverage)) +
+    ylab('') + xlab("Normalized enrichment score (NES)") +
+    khroma::scale_color_BuRd() +
+    scale_size_continuous(name="Gene set\ncoverage (%)",
+                          breaks=c(20, 40, 60, 80, 100),
+                          limits = c(0, 100),
+                          range = c(0, 5)) +
+    theme(panel.background=element_rect(color='grey10', fill=NULL)) +
+    facet_wrap(~immunegroup, nrow=1)
+}
+
+pdf('../results/gene_set_enrichment_immunegroups/hallmark_gene_set_enrichment_deg_immunegroups.pdf', width=12)
+print(bb_p[['hmk']])
+dev.off()
+
+pdf('../results/gene_set_enrichment_immunegroups/kegg_gene_set_enrichment_deg_immunegroups.pdf', width=15, height=12)
+print(bb_p[['keg']])
+dev.off()
+
+pdf('../results/gene_set_enrichment_immunegroups/reactome_gene_set_enrichment_deg_immunegroups.pdf', width=50, height=40)
+print(bb_p[['rct']])
+dev.off()
+
+rm(df_tmp, bb_p, fgsea_res) # Clean env
+```
+
+# GSEA ON DE AMONG COLLAPSED IMMUNEGROUPS
+```{r include=F}
+# Read DE genes and rank statistics (p-value, logFC)
+de_fp = '../results/differential_expression_immunegroups/diff_expr_genes_immunegroups_collapsed.xlsx'
+de_res = list()
+grps = openxlsx::getSheetNames(de_fp)
+for(i in grps){
+  de_res[[i]] = readxl::read_excel(de_fp, sheet=i) %>% filter(adj.P.Val < 0.1)
+}
+
+rm(de_fp, grps) # Clean env 
+```
+
+```{r include=F}
+# Calculate scores
+fgsea_res = list()
+for(i in names(de_res)){
+  logfc = de_res[[i]][['logFC']]
+  names(logfc) = de_res[[i]][['gene']]
+  
+  fgsea_hmk = fgsea(pathways=hmk_sets, stats=logfc, minSize=15, eps=0, nPermSimple=10000)
+  fgsea_keg = fgsea(pathways=keg_sets, stats=logfc, minSize=15, eps=0, nPermSimple=10000)
+  fgsea_rct = fgsea(pathways=rct_sets, stats=logfc, minSize=15, eps=0, nPermSimple=10000)
+  
+  fgsea_res[[i]] = list(hmk=fgsea_hmk, keg=fgsea_keg, rct=fgsea_rct)
+  
+  rm(fgsea_hmk, fgsea_keg, fgsea_rct, logfc) # Clean env
+  
+  openxlsx::write.xlsx(fgsea_res[[i]], paste0('../results/gene_set_enrichment_immunegroups/gene_set_enrichment_deg_collapsed_immunegroup_', i, '.xlsx'))
+}
+```
+
+```{r include=F}
+# Compile all results in long format
+df_tmp = tibble()
+for(i in names(fgsea_res)){
+  for(j in names(fgsea_res[[i]])){
+    
+      # Get pathway sizes
+    if(j == 'hmk'){
+      geneset_tmp = enframe(unlist(lapply(hmk_sets, length))) %>% 
+        rename(pathway=name, gene_set_size=value)
+    } else if(j == 'keg'){
+      geneset_tmp = enframe(unlist(lapply(keg_sets, length))) %>% 
+        rename(pathway=name, gene_set_size=value)
+    } else if(j == 'rct'){
+      geneset_tmp = enframe(unlist(lapply(rct_sets, length))) %>% 
+        rename(pathway=name, gene_set_size=value)
+    }
+    
+    df_tmp = bind_rows(df_tmp, fgsea_res[[i]][[j]] %>% filter(padj < 0.05) %>%
+                         select(c('pathway', 'padj', 'NES', 'size')) %>%
+                         add_column(immunegroup=i, dbase=j) %>%
+                         mutate(order_bubble=NES-0) %>%
+                         left_join(., geneset_tmp, by='pathway') %>%
+                         mutate(percent_set_coverage=(size/gene_set_size)*100))
+  }
+}
+
+# Generate "bubble" plots of enrichment scores
+bb_p = list()
+for(j in c('hmk', 'keg', 'rct')){
+  bb_p[[j]] = ggplot(df_tmp %>% filter(dbase == j)) +
+    geom_point(aes(x=NES, y=reorder(pathway, order_bubble), color=NES, size=percent_set_coverage)) +
+    ylab('') + xlab("Normalized enrichment score (NES)") +
+    khroma::scale_color_BuRd() +
+    scale_size_continuous(name="Gene set\ncoverage (%)",
+                          breaks=c(20, 40, 60, 80, 100),
+                          limits = c(0, 100),
+                          range = c(0, 5)) +
+    theme(panel.background=element_rect(color='grey10', fill=NULL)) +
+    facet_wrap(~immunegroup, nrow=1)
+}
+
+pdf('../results/gene_set_enrichment_immunegroups/hallmark_gene_set_enrichment_deg_collapsed_immunegroups.pdf', width=9, height=6)
+print(bb_p[['hmk']])
+dev.off()
+
+pdf('../results/gene_set_enrichment_immunegroups/kegg_gene_set_enrichment_deg_collapsed_immunegroups.pdf', width=15, height=12)
+print(bb_p[['keg']])
+dev.off()
+
+pdf('../results/gene_set_enrichment_immunegroups/reactome_gene_set_enrichment_deg_collapsed_immunegroups.pdf', width=50, height=40)
+print(bb_p[['rct']])
+dev.off()
+
+rm(df_tmp, bb_p) # Clean env
+```
+

@@ -1,0 +1,378 @@
+---
+title: "Deconvolution of immune cell types in sarcoma samples using MCP-counter"
+---
+
+```{r echo=F, include=F, message=F}
+library('tidyverse')
+library('MCPcounter')
+library('ComplexHeatmap')
+library('dynamicTreeCut')
+```
+
+```{r include=F}
+# Read clinical data and patient keys
+key_fp = '../data/ClinicalLinkagewithFiles_20230731_niceNames.xlsx'
+key_df = readxl::read_excel(key_fp, sheet=1, .name_repair='minimal') %>% 
+  select(-1) %>%# Remove columns with row numbers
+  janitor::clean_names() %>%
+  mutate(rna_seq_mod=tolower(.[['rna_seq']]) %>%
+           str_replace(., '\\-', '_')) %>%
+  filter(disease_type == 'SAR - Sarcoma') %>%
+  filter(rna_seq_mod != 'na')
+
+rm(key_fp) # Clean environment
+```
+
+```{r include=F}
+# Samples removed from clinical key data frame
+key_df = key_df %>% 
+  filter(!(rna_seq_mod %in% c("sl362871", "sl482620"))) %>% # Not sarcomas
+  filter(rna_seq_mod != "sl424998") # No library prep info on meta data - Unable to apply Combat
+```
+
+```{r include=F}
+# Read tumor mutation burden data (prepared by Dr. Alex Soupir)
+# Add data to clinical key
+tmb_fp = '../data/Somatic_MutationsPerMB_10rFiltered.csv'
+key_df = read_delim(tmb_fp, delim=',', show_col_types=F, name_repair='minimal') %>%
+  select(-1) %>% # Remove columns with row numbers
+  mutate(wes_sample=str_extract(Tumor_Sample_Barcode, '^T[\\-A-Z0-9]+_') %>%
+           str_replace(., '^T', '') %>%
+           str_replace(., '_$', '')) %>%
+  left_join(key_df, ., by=c('wes'='wes_sample'))
+
+rm(tmb_fp) # Clean environment
+```
+
+```{r include=F}
+# Recode sarcoma types with less than ten samples (many sarcoma types will be difficult to visualize)
+sarcoma_abundant = names(table(key_df[['changed_diagnosis_clean']]))[table(key_df[['changed_diagnosis_clean']]) >= 5]
+key_df = key_df %>%
+  mutate(sarcoma_collapsed=case_when(changed_diagnosis_clean %in% sarcoma_abundant ~ changed_diagnosis_clean, TRUE ~ 'other')) %>%
+  mutate(nice_name_reassigned=case_when(sarcoma_collapsed == 'other' ~ 'Other', TRUE ~ nice_name_reassigned))
+
+rm(sarcoma_abundant) # Clean env
+```
+
+```{r include=F}
+# Read gene expression summarized from isoforms
+# Remove counts from the misc_RNA classes rRNAs, 'Y_RNA' and 'Metazoa_SRP'
+# Remove pseudogenes, microRNAs, and snoRNAs
+counts_sum_df = data.table::fread(file='../data/transformed_gene_expr_sum_isoforms.csv') %>%
+  filter(!(gene_name %in% c('Y_RNA', 'Metazoa_SRP', '5_8S_rRNA', '5S_rRNA', '7SK', 'Vault'))) %>%
+  filter(!str_detect(gene_name, "^SNORD|^SNORA|^MIR|^RNA5|^RNU|^U[0-9]+$")) %>% 
+  column_to_rownames(var='gene_name')
+```
+
+```{r include=F, eval=F}
+# Run MCPcounter
+set.seed(12345) # Set seed just in case
+mcp_res = MCPcounter.estimate(as.matrix(counts_sum_df), featuresType='HUGO_symbols')
+mcp_res = as.data.frame(mcp_res)
+rownames(mcp_res) = tolower(rownames(mcp_res)) %>% str_replace_all(., ' ', '_')
+
+# Save scores to file
+mcp_res %>% rownames_to_column('cell_type') %>%
+  write.csv(mcp_res, '../results/immune_groups_deconvolution/mcpcounter_immune_scores.csv', quote=F, row.names=F)
+```
+
+```{r include=F}
+# Read previsouly estimated scores
+mcp_fp = '../results/immune_groups_deconvolution/mcpcounter_immune_scores.csv'
+mcp_res = read_delim(mcp_fp, show_col_types=F) %>% column_to_rownames('cell_type')
+
+rm(mcp_fp) # Clean env
+```
+
+```{r include=F}
+# Scale matrix to use in hclust and heatmaps
+mcp_scale = t(scale(t(mcp_res)))
+```
+
+```{r include=F}
+# Create color palettes for heatmaps
+
+# Use Dr. Soupir's palette
+col_pal_hist = readRDS('../data/collapsed_histology_color-vec.rds')
+names(col_pal_hist) = gsub('other', 'Other', names(col_pal_hist))
+
+# Create palette for primary/metastatic
+col_pal_met = as.vector(khroma::color('highcontrast')(2))
+names(col_pal_met) = gsub('[-\\(\\)\\/]+', '', unique(key_df[['primary_met']]))
+
+# Create data frame with heatmap annotations 
+annots_df = key_df %>%
+  select(c('rna_seq_mod', 'nice_name_reassigned', 'primary_met')) %>%
+  column_to_rownames(var='rna_seq_mod')
+
+#rm(sarcoma_type) # Clean environment
+```
+
+```{r include=F}
+# Add TMB data to annotation data frame for top barplot (for heatmap annotation)
+annots_df = annots_df %>%
+  rownames_to_column(var='rna_seq_mod') %>%
+  left_join(., key_df %>% select(c('rna_seq_mod', 'total_perMB')), by='rna_seq_mod') %>%
+  mutate(log_total_perMB=log1p(total_perMB)) %>%
+  mutate(log_total_perMB=case_when(is.na(log_total_perMB) ~ 0, TRUE ~ log_total_perMB)) %>%
+  column_to_rownames(var='rna_seq_mod')
+```
+
+```{r include=F, eval=F}
+# Do hierarchical clustering on MCPcounter scores
+mtx_hc_col = hclust(dist(t(mcp_scale)), method="ward.D")
+mtx_hc_row = hclust(dist(mcp_scale), method="ward.D")
+
+# Run dynamicTreeCuts on the MCPscores and hclust to classify sarcoma samples
+tree_cuts = tibble(
+  immunegroup=cutreeDynamic(mtx_hc_col, method='hybrid', distM=as.matrix(dist(t(mcp_scale))), verbose=F) %>%
+    paste0('dtc', .) %>%
+    factor(., levels= c('dtc4', 'dtc1', 'dtc5', 'dtc3', 'dtc2')) %>%
+    recode(., 'dtc4'='A', 'dtc1'='B', 'dtc5'='C', 'dtc3'='D', 'dtc2'='E'),
+  rna_seq_mod=colnames(mcp_scale)
+)
+
+# Add assignments to heatnap annotation data frame
+annots_df = annots_df %>%
+  rownames_to_column(var='rna_seq_mod') %>%
+  full_join(., tree_cuts,
+            by='rna_seq_mod') %>%
+  column_to_rownames(var='rna_seq_mod')
+
+# Get colors for DTCs
+col_dtc = scales::hue_pal()(length(unique(annots_df[['immunegroup']])))
+names(col_dtc) = c('A', 'B', 'C', 'D', 'E')
+
+rm(tree_cuts) # Clean env
+
+# Save annotations to text file for additional plotting
+write.csv(annots_df %>%
+            rownames_to_column(var='samplename'), 
+          '../data/immune_groups_deconvolution/mcpcounter_immune_clusters.csv', row.names=F, quote=F)
+```
+
+```{r include=F}
+# Read previously generated immunegroup annotations
+imgroups_fp = '../data/immune_groups_deconvolution/mcpcounter_immune_clusters.csv'
+annots_df = read_delim(imgroups_fp, show_col_types=F) %>%
+  column_to_rownames(var='samplename')
+
+rm(imgroups_fp) # Clean env
+```
+
+```{r include=F}
+# Compute Kruskal-Wallis to test for differences on cell type score between DTC clusters
+# Run KW tests for individual groups and collapsed groups (A/B, C, D/E)
+kw_test = tibble()
+kw_test_collap = tibble()
+for(celltype in rownames(mcp_scale)){
+  df_tmp = t(mcp_scale[celltype, , drop=F]) %>%
+    as.data.frame() %>%
+    rename(score=1) %>%
+    rownames_to_column(var='rna_seq_mod') %>%
+    full_join(., annots_df %>% rownames_to_column(var='rna_seq_mod'), by='rna_seq_mod') %>%
+    mutate(immunegroup_collap=recode(immunegroup, A='cold', B='cold', D='hot', E='hot'))
+
+  kw_tmp = kruskal.test(score ~ immunegroup, data=df_tmp)
+  kw_collap_tmp = kruskal.test(score ~ immunegroup_collap, data=df_tmp)
+  kw_test = bind_rows(kw_test, tibble(cell_type=celltype, 
+                                      kw_st=as.vector(kw_tmp[['statistic']]),
+                                      kw_df=as.vector(kw_tmp[['parameter']]),
+                                      kw_pval=kw_tmp[['p.value']],
+                                      grp_a=median(df_tmp[['score']][df_tmp[['immunegroup']] == 'A']),
+                                      grp_b=median(df_tmp[['score']][df_tmp[['immunegroup']] == 'B']),
+                                      grp_c=median(df_tmp[['score']][df_tmp[['immunegroup']] == 'C']),
+                                      grp_d=median(df_tmp[['score']][df_tmp[['immunegroup']] == 'D']),
+                                      grp_e=median(df_tmp[['score']][df_tmp[['immunegroup']] == 'E'])))
+  kw_test_collap = bind_rows(kw_test_collap, tibble(cell_type=celltype, 
+                                                    kw_st=as.vector(kw_collap_tmp[['statistic']]),
+                                                    kw_df=as.vector(kw_collap_tmp[['parameter']]),
+                                                    kw_pval=kw_collap_tmp[['p.value']],
+                                                    grp_cold=median(df_tmp[['score']][df_tmp[['immunegroup_collap']] == 'cold']),
+                                                    grp_c=median(df_tmp[['score']][df_tmp[['immunegroup_collap']] == 'C']),
+                                                    grp_hot=median(df_tmp[['score']][df_tmp[['immunegroup_collap']] == 'hot'])))
+
+  rm(df_tmp, kw_tmp, kw_collap_tmp) # Clean env
+}
+
+# Adjust p-values for multiple comparisons
+kw_test[['adj_pval']] = p.adjust(kw_test$kw_pval, method='BH')
+kw_test_collap[['adj_pval']] = p.adjust(kw_test_collap$kw_pval, method='BH')
+kw_test = kw_test %>% arrange(adj_pval)
+kw_test_collap = kw_test_collap %>% arrange(adj_pval)
+
+write.csv(kw_test, '../results/immune_groups_deconvolution/kruskalw_cell_abundances_immunegroups.csv', row.names=F, quote=F)
+write.csv(kw_test_collap, '../results/immune_groups_deconvolution/kruskalw_cell_abundances_immunegroups_collapsed.csv', row.names=F, quote=F)
+```
+
+```{r include=F}
+# Run Wilcoxon's test for pairwise comparisons of scores among immunegroups
+wx_test = tibble()
+for(celltype in rownames(mcp_scale)){
+  df_tmp = t(mcp_scale[celltype, , drop=F]) %>%
+    as.data.frame() %>%
+    rename(score=1) %>%
+    rownames_to_column(var='rna_seq_mod') %>%
+    full_join(., annots_df %>% rownames_to_column(var='rna_seq_mod'), by='rna_seq_mod')
+  
+  for(imgrp in unique(df_tmp[['immunegroup']])){
+    other_imgrp = grep(imgrp, unique(df_tmp[['immunegroup']]), value=T, invert=T)
+    
+    for(imgrp2 in other_imgrp){
+      wx_tmp = wilcox.test(df_tmp[['score']][df_tmp[['immunegroup']] == imgrp],
+                           df_tmp[['score']][df_tmp[['immunegroup']] == imgrp2])
+      wx_test = bind_rows(wx_test, tibble(cell_type=celltype,
+                                          immunegroup1=imgrp,
+                                          median_immunegroup1=median(df_tmp[['score']][df_tmp[['immunegroup']] == imgrp]),
+                                          immunegroup2=imgrp2,
+                                          median_immunegroup2=median(df_tmp[['score']][df_tmp[['immunegroup']] == imgrp2]),
+                                          wilcox_st=as.vector(wx_tmp[['statistic']]),
+                                          wilcox_pval=wx_tmp[['p.value']]))
+    }
+    rm(other_imgrp, wx_tmp) # Clean env
+  }
+  rm(df_tmp) # Clean env
+}
+
+# Adjust p-values for multiple comparisons
+wx_test[['adj_pval']] = p.adjust(wx_test$wilcox_pval, method='BH')
+wx_test = wx_test %>% arrange(immunegroup1, immunegroup2, adj_pval)
+
+# Run Wilcoxon's tests for pairwise comparisons of scores among collapsed groups (A/B, C, D/E)
+wx_test_collap = tibble()
+for(celltype in rownames(mcp_scale)){
+  df_tmp = t(mcp_scale[celltype, , drop=F]) %>%
+    as.data.frame() %>%
+    rename(score=1) %>%
+    rownames_to_column(var='rna_seq_mod') %>%
+    full_join(., annots_df %>% rownames_to_column(var='rna_seq_mod'), by='rna_seq_mod') %>%
+    mutate(immunegroup_collap=recode(immunegroup, A='cold', B='cold', D='hot', E='hot'))
+  
+  for(imgrp in unique(df_tmp[['immunegroup_collap']])){
+    other_imgrp = grep(imgrp, unique(df_tmp[['immunegroup_collap']]), value=T, invert=T)
+    
+    for(imgrp2 in other_imgrp){
+      wx_tmp = wilcox.test(df_tmp[['score']][df_tmp[['immunegroup_collap']] == imgrp],
+                           df_tmp[['score']][df_tmp[['immunegroup_collap']] == imgrp2])
+      wx_test_collap = bind_rows(wx_test_collap, tibble(cell_type=celltype,
+                                                        immunegroup1=imgrp,
+                                                        median_immunegroup1=median(df_tmp[['score']][df_tmp[['immunegroup_collap']] == imgrp]),
+                                                        immunegroup2=imgrp2,
+                                                        median_immunegroup2=median(df_tmp[['score']][df_tmp[['immunegroup_collap']] == imgrp2]),
+                                                        wilcox_st=as.vector(wx_tmp[['statistic']]),
+                                                        wilcox_pval=wx_tmp[['p.value']]))
+    }
+    rm(other_imgrp, wx_tmp) # Clean env
+  }
+  rm(df_tmp) # Clean env
+}
+
+# Adjust p-values for multiple comparisons
+wx_test_collap[['adj_pval']] = p.adjust(wx_test_collap$wilcox_pval, method='BH')
+wx_test_collap = wx_test_collap %>% arrange(immunegroup1, immunegroup2, adj_pval)
+
+write.csv(wx_test, '../results/immune_groups_deconvolution/wilcox_cell_abundances_immunegroups.csv', row.names=F, quote=F)
+write.csv(wx_test_collap, '../results/immune_groups_deconvolution/wilcox_cell_abundances_immunegroups_collapsed.csv', row.names=F, quote=F)
+```
+
+```{r include=F}
+# Generate heatmap with samples ordered by hierarchical clustering
+# Create barplot annotation for heatmap
+hm_ann_bar = HeatmapAnnotation(log_mut_per_mb=anno_barplot(annots_df[, 'log_total_perMB', drop=F]))
+
+# Create color annotation for heatmap
+hm_ann = HeatmapAnnotation(df=annots_df %>%
+                             select(c('nice_name_reassigned', 'primary_met', 'immunegroup')),
+                           col=list(nice_name_reassigned=col_pal_hist,
+                                    primary_met=col_pal_met,
+                                    immunegroup=col_dtc))
+
+# Make color scale to accentuate the differences
+hm_col = circlize::colorRamp2(c(-4, -1.5, 0, 1.5, 4), c("darkblue", "blue", "white", "red", "darkred"))
+
+# Make heatmap
+p1 = Heatmap(mcp_scale, 
+             cluster_columns=mtx_hc_col, cluster_rows=mtx_hc_row, 
+             show_row_names=T, show_column_names=F, 
+             bottom_annotation=hm_ann,
+             top_annotation=hm_ann_bar,
+             #right_annotation=hm_ann_pv,
+             column_title='Scaled MCPcounter cell type scores (hierarchical clustering)',
+             heatmap_legend_param=list(title="Scaled\nscore"),
+             show_column_dend=F,
+             show_row_dend=F,
+             col=hm_col,
+             column_split=5,
+             row_names_side="left")
+```
+
+```{r include=F}
+# Make heatmap ordered by immunegroup and histology
+annots_df = annots_df %>%
+  arrange(immunegroup, nice_name_reassigned)
+
+# Create barplot annotation for heatmap
+hm_ann_bar = HeatmapAnnotation(log_mut_per_mb=anno_barplot(annots_df[, 'log_total_perMB', drop=F]))
+
+# Create color annotation for heatmap
+hm_ann = HeatmapAnnotation(df=annots_df %>%
+                             select(c('nice_name_reassigned', 'primary_met', 'immunegroup')),
+                           col=list(nice_name_reassigned=col_pal_hist,
+                                    primary_met=col_pal_met,
+                                    immunegroup=col_dtc))
+
+# Make heatmap
+p2 = Heatmap(mcp_scale[, rownames(annots_df)], 
+             cluster_columns=F, cluster_rows=mtx_hc_row, 
+             show_row_names=T, show_column_names=F, 
+             bottom_annotation=hm_ann,
+             top_annotation=hm_ann_bar,
+             #right_annotation=hm_ann_pv,
+             column_title='Scaled MCPcounter cell type scores',
+             heatmap_legend_param=list(title="Scaled\nscore"),
+             show_column_dend=F,
+             show_row_dend=F,
+             col=hm_col,
+             column_split=annots_df[['immunegroup']],
+             row_names_side="left")
+```
+
+```{r include=F}
+pdf('../results/immune_groups_deconvolution/sarcoma_avatar_mcpdeconv_tumorburden.pdf', width=15, height=8)
+print(p1)
+print(p2)
+dev.off()
+
+#rm(p1, p2, hm_ann, hm_ann_pv, hm_col, hm_ann_bar, mtx_hc_row, mtx_hc_col, kw_test) # Clean env
+rm(p1, p2, hm_ann, hm_col, hm_ann_bar, mtx_hc_row, mtx_hc_col) # Clean env
+```
+
+```{r include=F}
+# Create stacked barplot showing histologies within each DTC/hclust cluster
+sarcomas_dtc = annots_df %>%
+  group_by(immunegroup, nice_name_reassigned) %>%
+  summarize(count=n()) %>%
+  ungroup()
+
+# Barplot as proportions 
+p1 = ggplot(sarcomas_dtc, aes(x=immunegroup, y=count)) +
+  geom_bar(aes(fill=nice_name_reassigned), position="fill", stat="identity") +
+  ylab('Percent samples') +
+  xlab('Immune clusters (dynamicTreeCuts)') +
+  scale_fill_manual(values=col_pal_hist) +
+  theme(panel.border=element_rect(colour="black", fill=NA))
+
+# Barplot as absolute sample numbers
+p2 = ggplot(sarcomas_dtc, aes(x=immunegroup, y=count)) +
+  geom_bar(aes(fill=nice_name_reassigned), stat="identity") +
+  ylab('Samples') +
+  xlab('Immune clusters (dynamicTreeCuts)') +
+  scale_fill_manual(values=col_pal_hist) +
+  theme(panel.border=element_rect(colour="black", fill=NA))
+
+pdf('../results/immune_groups_deconvolution/sarcoma_avatar_mcpdeconv_dtc_histology_prop_barplot.pdf', width=10, height=5)
+p1
+p2
+dev.off()
+```
+

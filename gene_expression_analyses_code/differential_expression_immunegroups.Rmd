@@ -1,0 +1,511 @@
+---
+title: "Differential expression of immune groups"
+---
+
+```{r echo=F, include=F}
+library('tidyverse')
+library('umap')
+library('ComplexHeatmap')
+```
+
+### Data read and preparation
+```{r include=F}
+# Read clinical data and patient keys
+key_fp = '../data/ClinicalLinkagewithFiles_niceNames.xlsx'
+key_df = readxl::read_excel(key_fp, sheet=1, .name_repair='minimal') %>%
+  #select(-1) %>%# Remove columns with row numbers
+  janitor::clean_names() %>%
+  mutate(rna_seq_mod=tolower(.[['rna_seq']]) %>%
+           str_replace(., '\\-', '_')) %>%
+  filter(disease_type == 'SAR - Sarcoma') %>%
+  filter(rna_seq_mod != 'na')
+
+rm(key_fp) # Clean environment
+```
+
+```{r include=F}
+# Samples removed from clinical key data frame
+key_df = key_df %>% 
+  filter(!(rna_seq_mod %in% c("sl362871", "sl482620"))) %>% # Not sarcomas
+  filter(rna_seq_mod != "sl424998") # No library prep info on meta data - Unable to apply Combat
+```
+
+```{r include=F}
+# Read DTC immune clusters assignments (generated with MCPcounter immune scores)
+# Refer to script "sarcoma_avatar_rnaseq_mcpdeconv.Rmd"
+# Add data to clinical key
+dtc_fp = '../data/immune_groups_deconvolution/mcpcounter_immune_clusters.csv'
+key_df = read_delim(dtc_fp, delim=',', show_col_types=F, name_repair='minimal') %>%
+  select(c('samplename', 'immunegroup')) %>%
+  left_join(key_df, ., by=c('rna_seq_mod'='samplename'))
+
+rm(dtc_fp) # Clean environment
+```
+
+```{r include=F}
+# Recode sarcoma types with less than ten samples (many sarcoma types will be difficult to visualize)
+sarcoma_abundant = names(table(key_df[['changed_diagnosis_clean']]))[table(key_df[['changed_diagnosis_clean']]) >= 5]
+key_df = key_df %>%
+  mutate(sarcoma_collapsed=case_when(changed_diagnosis_clean %in% sarcoma_abundant ~ changed_diagnosis_clean, TRUE ~ 'other')) %>%
+  mutate(nice_name_reassigned=case_when(sarcoma_collapsed == 'other' ~ 'Other', TRUE ~ nice_name_reassigned))
+
+rm(sarcoma_abundant) # Clean env
+```
+
+```{r include=F}
+# Read gene expression summarized from isoforms (i.e., sum of isoforms for a given gene)
+# Remove counts from the misc_RNA classes rRNAs, 'Y_RNA' and 'Metazoa_SRP'
+# Remove pseudogenes, microRNAs, and snoRNAs
+counts_sum_df = data.table::fread(file='../data/transformed_gene_expr_sum_isoforms.csv') %>%
+  filter(!(gene_name %in% c('Y_RNA', 'Metazoa_SRP', '5_8S_rRNA', '5S_rRNA', '7SK', 'Vault'))) %>%
+  filter(!str_detect(gene_name, "^SNORD|^SNORA|^MIR|^RNA5|^RNU|^U[0-9]+$")) %>% 
+  column_to_rownames(var='gene_name')
+```
+
+```{r include=F}
+# If column names in expression and sample names in meta data are not in the same order = ERROR
+if(!identical(colnames(counts_sum_df), key_df[['rna_seq_mod']])){
+  stop('Verify sample names are in the same order in expression data and metadata')
+}
+```
+
+### DE gene tests
+```{r include=F}
+# Find DE genes among immune groups
+top_de = list()
+for(i in unique(key_df[['immunegroup']])){
+  grps = key_df %>% select(c("rna_seq_mod", "immunegroup")) %>% 
+    mutate(immunegroup=case_when(immunegroup != i ~ 'other_igroup', TRUE ~ immunegroup))
+  grps[['immunegroup']] = factor(grps[['immunegroup']], levels=c('other_igroup', i))
+
+  mtx = model.matrix(~0 + grps[['immunegroup']])
+  colnames(mtx) = levels(grps$immunegroup)
+  
+  modelfit = limma::lmFit(counts_sum_df, mtx)
+  factors_tmp =  c(grep('other_igroup', colnames(coef(modelfit)), value=T, invert=T), 'other_igroup')
+  contr = limma::makeContrasts(contrasts=paste0(factors_tmp, collapse=' - '), levels=colnames(coef(modelfit)))
+  gene_fits = limma::contrasts.fit(modelfit, contr)
+  ebayes_smooth = limma::eBayes(gene_fits)
+  
+  top_de[[i]] = limma::topTable(ebayes_smooth, sort.by="P", n=Inf)
+  top_de[[i]] = top_de[[i]] %>% 
+    rownames_to_column(var='gene') %>% arrange(adj.P.Val, desc(logFC))
+  
+  rm(mtx, modelfit, contr, gene_fits, ebayes_smooth, grps, factors_tmp) # Clean env
+}
+
+#openxlsx::write.xlsx(top_de, '../results/differential_expression_immunegroups/diff_expr_genes_immunegroups.xlsx')
+```
+
+```{r include=F}
+# Find DE genes among collapsed immune groups (AB vs ED vs C)
+top_collapsed_de = list()
+collapsed_grps = c('immune_cold', 'immune_hot', 'immune_gist')
+for(i in collapsed_grps){
+  grps = key_df %>% select(c("rna_seq_mod", "immunegroup")) 
+  if(i == 'immune_cold'){
+    grps = grps %>% mutate(immunegroup=case_when(immunegroup %in% c('C', 'D', 'E') ~ 'other_igroup', TRUE ~ 'immune_cold'))
+  } else if(i == 'immune_hot'){
+    grps = grps %>% mutate(immunegroup=case_when(immunegroup %in% c('A', 'B', 'C') ~ 'other_igroup', TRUE ~ 'immune_hot'))
+  } else{
+    grps = grps %>% mutate(immunegroup=case_when(immunegroup %in% c('A', 'B', 'D', 'E') ~ 'other_igroup', TRUE ~ 'immune_gist'))
+  }
+  grps[['immunegroup']] = factor(grps[['immunegroup']], levels=c('other_igroup', i))
+
+  mtx = model.matrix(~0 + grps[['immunegroup']])
+  colnames(mtx) = levels(grps$immunegroup)
+  
+  modelfit = limma::lmFit(counts_sum_df, mtx)
+  factors_tmp =  c(grep('other_igroup', colnames(coef(modelfit)), value=T, invert=T), 'other_igroup')
+  contr = limma::makeContrasts(contrasts=paste0(factors_tmp, collapse=' - '), levels=colnames(coef(modelfit)))
+  gene_fits = limma::contrasts.fit(modelfit, contr)
+  ebayes_smooth = limma::eBayes(gene_fits)
+  
+  top_collapsed_de[[i]] = limma::topTable(ebayes_smooth, sort.by="P", n=Inf)
+  top_collapsed_de[[i]] = top_collapsed_de[[i]] %>% 
+    rownames_to_column(var='gene') %>% arrange(adj.P.Val, desc(logFC))
+  
+  rm(mtx, modelfit, contr, gene_fits, ebayes_smooth, grps, factors_tmp) # Clean env
+}
+
+rm(collapsed_grps) # Clean env
+
+#openxlsx::write.xlsx(top_collapsed_de, '../results/differential_expression_immunegroups/diff_expr_genes_immunegroups_collapsed.xlsx')
+```
+
+```{r include=F}
+# Find DE genes among immune groups including interaction with histology
+top_itx_de = list()
+for(i in unique(key_df[['immunegroup']])){
+  grps = key_df %>% select(c("rna_seq_mod", "immunegroup", 'sarcoma_collapsed')) %>% 
+    mutate(immunegroup=case_when(immunegroup != i ~ 'other_igroup', TRUE ~ immunegroup))
+  grps[['immunegroup']] = factor(grps[['immunegroup']], levels=c('other_igroup', i))
+
+  mtx = model.matrix(~0 + immunegroup + sarcoma_collapsed + immunegroup:sarcoma_collapsed, data=grps)
+  colnames(mtx) = gsub("immunegroup|sarcoma_collapsed", "", colnames(mtx))
+  
+  modelfit = limma::lmFit(counts_sum_df, mtx)
+  coefs_test =  which(colnames(coef(modelfit)) == i)
+  contr = limma::contrasts.fit(modelfit, coef=coefs_test)
+  ebayes_smooth = limma::eBayes(contr)
+  
+  top_itx_de[[i]] = limma::topTable(ebayes_smooth, sort.by="P", n=Inf)
+  top_itx_de[[i]] = top_itx_de[[i]] %>% 
+    rownames_to_column(var='gene') %>% arrange(adj.P.Val, desc(logFC))
+  
+  rm(mtx, modelfit, contr, ebayes_smooth, grps, coefs_test) # Clean env
+}
+
+#openxlsx::write.xlsx(top_itx_de, '../results/differential_expression_immunegroups/diff_expr_genes_immunegroups_histology.xlsx')
+```
+
+```{r include=F}
+# Find DE genes among immune groups including interaction with prim/meta
+top_primmeta_de = list()
+for(i in unique(key_df[['immunegroup']])){
+  grps = key_df %>% select(c("rna_seq_mod", "immunegroup", 'primary_met')) %>% 
+    mutate(immunegroup=case_when(immunegroup != i ~ 'other_igroup', TRUE ~ immunegroup))
+  grps[['immunegroup']] = factor(grps[['immunegroup']], levels=c('other_igroup', i))
+
+  mtx = model.matrix(~0 + immunegroup + primary_met + immunegroup:primary_met, data=grps)
+  colnames(mtx) = gsub("immunegroup|primary_met", "", colnames(mtx))
+  
+  modelfit = limma::lmFit(counts_sum_df, mtx)
+  coefs_test =  which(colnames(coef(modelfit)) == i)
+  contr = limma::contrasts.fit(modelfit, coef=coefs_test)
+  ebayes_smooth = limma::eBayes(contr)
+  
+  top_itx_de[[i]] = limma::topTable(ebayes_smooth, sort.by="P", n=Inf)
+  top_itx_de[[i]] = top_itx_de[[i]] %>% 
+    rownames_to_column(var='gene') %>% arrange(adj.P.Val, desc(logFC))
+  
+  rm(mtx, modelfit, contr, ebayes_smooth, grps, coefs_test) # Clean env
+}
+
+#openxlsx::write.xlsx(top_itx_de, '../results/differential_expression_immunegroups/diff_expr_genes_immunegroups_primarymetastasis.xlsx')
+```
+
+#### PLOTS OF GENES AMONG IMMUNEGROUPS
+```{r include=F}
+# Create color palette (seed set to replicate color order)
+set.seed(32154)
+sarcoma_type = unique(key_df[['sarcoma_collapsed']])
+col_pal_hist = sample(as.vector(khroma::color('discreterainbow', force=T)(length(sarcoma_type))))
+names(col_pal_hist) = unique(key_df[['sarcoma_collapsed']])
+
+# Create color palette for cleaned names
+col_pal_hist_clean = col_pal_hist
+for(i in 1:length(col_pal_hist_clean)){
+  names(col_pal_hist_clean)[i] = unique(key_df[['nice_name_reassigned']][ key_df[['sarcoma_collapsed']] == names(col_pal_hist_clean)[i] ])
+}
+
+# Create color palettes for primary/met and NMF categories
+col_pal_met = as.vector(khroma::color('highcontrast')(2))
+names(col_pal_met) = gsub('[-\\(\\)\\/]+', '', unique(key_df[['primary_met']]))
+
+# Create color palettes for DTC clusters
+col_pal_dtc = scales::hue_pal()(length(unique(key_df[['immunegroup']])))
+names(col_pal_dtc) = c('A', 'B', 'C', 'D', 'E')
+
+rm(sarcoma_type) # Clean env
+```
+
+```{r include=F}
+# Subset genes based on DE analysis (keep top 5K genes per immune group)
+genes_keep = c()
+for(i in names(top_de)){
+  genes_keep = append(genes_keep,
+                      top_de[[i]] %>% arrange(adj.P.Val, desc(AveExpr)) %>% 
+                        slice_head(n=5000) %>% select('gene') %>% unlist() %>% as.vector())
+}
+genes_keep = unique(genes_keep)
+counts_filt_df = counts_sum_df[genes_keep, ]
+
+# Median scale the data
+counts_filt_df = t(scale(t(counts_filt_df), center=apply(counts_filt_df, 1, median), scale=T))
+
+rm(genes_keep) # Clean environment
+```
+
+```{r include=F}
+# Modify parameters for UMAP
+custom_config = umap.defaults
+custom_config$random_state = 12345
+custom_config$n_components = 3
+```
+
+```{r include=F}
+# Run UMAP
+counts_filt_t = t(counts_filt_df)
+umap_res = umap(counts_filt_t, config=custom_config)
+
+# Create data frame for UMAP plot
+umap_df = umap_res[['layout']] %>%
+  as.data.frame() %>%
+  select(1:3) %>%
+  rownames_to_column(var='sample') %>%
+  left_join(., key_df %>%
+              select(sample=rna_seq_mod, sarcoma_collapsed, immunegroup, nice_name_reassigned), by='sample')
+
+up1 = ggplot(umap_df) +
+  geom_point(aes(x=V1, y=V2, color=nice_name_reassigned), size=0.7, alpha=0.7) +
+  ggtitle('Sarcoma histology\n(DE genes among immunegroups)') +
+  xlab(paste0('UMAP1')) + ylab(paste0('UMAP2')) +
+  labs(color=NULL) +
+  scale_color_manual(values=col_pal_hist_clean) +
+  guides(color=guide_legend(override.aes=list(size=2, alpha=1), ncol=1)) +
+  coord_fixed(1) +
+  theme_void()
+
+up2 = ggplot(umap_df) +
+  geom_point(aes(x=V1, y=V2, color=immunegroup), size=0.7, alpha=0.7) +
+  ggtitle('Immunogroup\n(DE genes among immunegroups)') +
+  xlab(paste0('UMAP1')) + ylab(paste0('UMAP2')) +
+  labs(color=NULL) +
+  guides(color=guide_legend(override.aes=list(size=2, alpha=1), ncol=1)) +
+  coord_fixed(1) +
+  theme_void()
+
+#pdf('../results/differential_expression_immunegroups/umap_all_de_genes_immunegroups.pdf')
+print(up1)
+print(up2)
+#dev.off()
+
+rm(up1, up2, umap_df, umap_res, counts_filt_t) # Clean env
+```
+
+```{r include=F}
+# Generate heatmap with subset of DE genes
+# Order samples according to immunogroup assignments and histology
+annots_df_ordered = key_df %>%
+  select(c('rna_seq_mod', 'immunegroup', 'nice_name_reassigned', 'primary_met')) %>%
+  arrange(immunegroup, nice_name_reassigned) %>%
+  column_to_rownames('rna_seq_mod')
+
+# Create heatmap annotation object
+hm_ann = HeatmapAnnotation(df=annots_df_ordered %>%
+                             select(c('nice_name_reassigned', 'primary_met', 'immunegroup')),
+                           col=list(nice_name_reassigned=col_pal_hist_clean,
+                                    primary_met=col_pal_met,
+                                    immunegroup=col_pal_dtc))
+
+# Make color scale to accentuate the differences
+hm_col = circlize::colorRamp2(c(-2.5, -1.5, 0, 1.5, 2.5), c("darkblue", "blue", "white", "red", "darkred"))
+```
+
+```{r include=F}
+# Top DE genes by immunegroup
+genes_keep = lapply(top_de, function(i){
+  top_de_tmp = i %>% arrange(desc(logFC))
+  genes_tmp = top_de_tmp[['gene']][ top_de_tmp[['adj.P.Val']] < 0.05 & top_de_tmp[['logFC']] > 1 ]
+  genes_tmp = genes_tmp[1:20]
+  return(genes_tmp)
+})
+genes_keep = unique(as.vector(unlist(genes_keep)))
+
+# Subset genes and re-scale
+counts_hm_mtx = counts_filt_df[na.omit(match(genes_keep, rownames(counts_filt_df))) , ]
+counts_hm_mtx = t(scale(t(counts_hm_mtx)))
+
+# Sort data according to MCPcluster
+counts_hm_mtx = counts_hm_mtx[, match(rownames(annots_df_ordered %>% arrange(immunegroup, nice_name_reassigned)), colnames(counts_hm_mtx))]
+
+# Create and plot heatmap
+gexpr_hm = Heatmap(counts_hm_mtx, 
+             cluster_columns=F, cluster_rows=F, 
+             show_row_names=T, show_column_names=F, 
+             show_row_dend=F,
+             row_title='Log-normalized\ngene expression',
+             heatmap_legend_param=list(title="Scaled\ngene expr"),
+             show_column_dend=F,
+             row_names_side="left",
+             column_split=annots_df_ordered[['mcpcounter_dtc']],
+             bottom_annotation=hm_ann,
+             col=hm_col)
+
+#pdf('../results/differential_expression_immunegroups/heatmap_subset_de_genes_immunegroups.pdf', height=14, width=8)
+print(gexpr_hm)
+#dev.off()
+
+rm(genes_keep, counts_hm_mtx, counts_filt_df, gexpr_hm) # Clean env
+```
+
+####  PLOTS OF GENES AMONG COLLAPSED IMMUNEGROUPS
+```{r include=F}
+# Subset genes based on DE analysis (keep top 5K genes per immune group)
+genes_keep = c()
+for(i in names(top_collapsed_de)){
+  genes_keep = append(genes_keep,
+                      top_collapsed_de[[i]] %>% arrange(adj.P.Val, desc(AveExpr)) %>% 
+                        slice_head(n=5000) %>% select('gene') %>% unlist() %>% as.vector())
+}
+genes_keep = unique(genes_keep)
+counts_filt_df = counts_sum_df[genes_keep, ]
+
+# Median scale the data
+counts_filt_df = t(scale(t(counts_filt_df), center=apply(counts_filt_df, 1, median), scale=T))
+
+rm(genes_keep) # Clean environment
+```
+
+```{r include=F}
+# Run UMAP
+counts_filt_t = t(counts_filt_df)
+umap_res = umap(counts_filt_t, config=custom_config)
+
+# Create data frame for UMAP plot
+umap_df = umap_res[['layout']] %>%
+  as.data.frame() %>%
+  select(1:3) %>%
+  rownames_to_column(var='sample') %>%
+  left_join(., key_df %>%
+              select(sample=rna_seq_mod, sarcoma_collapsed, immunegroup, nice_name_reassigned), by='sample')
+
+up1 = ggplot(umap_df) +
+  geom_point(aes(x=V1, y=V2, color=nice_name_reassigned), size=0.7, alpha=0.7) +
+  ggtitle('Sarcoma histology\n(DE genes among collapsed immunegroups)') +
+  xlab(paste0('UMAP1')) + ylab(paste0('UMAP2')) +
+  labs(color=NULL) +
+  scale_color_manual(values=col_pal_hist_clean) +
+  guides(color=guide_legend(override.aes=list(size=2, alpha=1), ncol=1)) +
+  coord_fixed(1) +
+  theme_void()
+
+up2 = ggplot(umap_df) +
+  geom_point(aes(x=V1, y=V2, color=immunegroup), size=0.7, alpha=0.7) +
+  ggtitle('Immunogroup\n(DE genes among collapsed immunegroups)') +
+  xlab(paste0('UMAP1')) + ylab(paste0('UMAP2')) +
+  labs(color=NULL) +
+  guides(color=guide_legend(override.aes=list(size=2, alpha=1), ncol=1)) +
+  coord_fixed(1) +
+  theme_void()
+
+#pdf('../results/differential_expression_immunegroups/umap_all_de_genes_collapsed_immunegroups.pdf')
+print(up1)
+print(up2)
+#dev.off()
+
+rm(up1, up2, umap_df, umap_res, counts_filt_t) # Clean env
+```
+
+```{r include=F}
+# Top DE genes by immunegroup
+genes_keep = lapply(top_collapsed_de, function(i){
+  top_de_tmp = i %>% arrange(desc(logFC))
+  genes_tmp = top_de_tmp[['gene']][ top_de_tmp[['adj.P.Val']] < 0.05 & top_de_tmp[['logFC']] > 1 ]
+  genes_tmp = genes_tmp[1:20]
+})
+genes_keep = unique(as.vector(unlist(genes_keep)))
+
+# Subset genes and re-scale
+counts_hm_mtx = counts_filt_df[na.omit(match(genes_keep, rownames(counts_filt_df))) , ]
+counts_hm_mtx = t(scale(t(counts_hm_mtx)))
+
+# Sort data according to MCPcluster
+counts_hm_mtx = counts_hm_mtx[, match(rownames(annots_df_ordered %>% arrange(immunegroup, nice_name_reassigned)), colnames(counts_hm_mtx))]
+
+gexpr_hm = Heatmap(counts_hm_mtx, 
+             cluster_columns=F, cluster_rows=F, 
+             show_row_names=T, show_column_names=F, 
+             show_row_dend=F,
+             row_title='Log-normalized\ngene expression',
+             heatmap_legend_param=list(title="Scaled\ngene expr"),
+             show_column_dend=F,
+             row_names_side="left",
+             column_split=annots_df_ordered[['mcpcounter_dtc']],
+             bottom_annotation=hm_ann,
+             col=hm_col)
+
+#pdf('../results/differential_expression_immunegroups/heatmap_subset_de_genes_collapsed_immunegroups.pdf', height=14, width=8)
+print(gexpr_hm)
+#dev.off()
+
+rm(genes_keep, counts_hm_mtx, gexpr_hm) # Clean env
+```
+
+#### DE GENES AMONG GIST IN EACH COLLAPSED IMMUNEGROUP
+```{r include=F}
+# Find DE genes among collapsed immune groups (AB vs ED vs C)
+top_gist_de = list()
+collapsed_grps = c('immune_cold', 'immune_hot', 'immune_gist')
+for(i in collapsed_grps){
+  grps = key_df %>% filter(sarcoma_collapsed == 'gastrointestinal_stromal_tumor') %>% select(c("rna_seq_mod", "immunegroup")) 
+  if(i == 'immune_cold'){
+    grps = grps %>% mutate(immunegroup=case_when(immunegroup %in% c('C', 'D', 'E') ~ 'other_igroup', TRUE ~ 'immune_cold'))
+  } else if(i == 'immune_hot'){
+    grps = grps %>% mutate(immunegroup=case_when(immunegroup %in% c('A', 'B', 'C') ~ 'other_igroup', TRUE ~ 'immune_hot'))
+  } else{
+    grps = grps %>% mutate(immunegroup=case_when(immunegroup %in% c('A', 'B', 'D', 'E') ~ 'other_igroup', TRUE ~ 'immune_gist'))
+  }
+  grps[['immunegroup']] = factor(grps[['immunegroup']], levels=c('other_igroup', i))
+
+  mtx = model.matrix(~0 + grps[['immunegroup']])
+  colnames(mtx) = levels(grps$immunegroup)
+  
+  modelfit = limma::lmFit(counts_sum_df[ colnames(counts_sum_df) %in% grps[['rna_seq_mod']] ], mtx)
+  factors_tmp =  c(grep('other_igroup', colnames(coef(modelfit)), value=T, invert=T), 'other_igroup')
+  contr = limma::makeContrasts(contrasts=paste0(factors_tmp, collapse=' - '), levels=colnames(coef(modelfit)))
+  gene_fits = limma::contrasts.fit(modelfit, contr)
+  ebayes_smooth = limma::eBayes(gene_fits)
+  
+  top_gist_de[[i]] = limma::topTable(ebayes_smooth, sort.by="P", n=Inf)
+  top_gist_de[[i]] = top_gist_de[[i]] %>% 
+    rownames_to_column(var='gene') %>% arrange(adj.P.Val, desc(logFC))
+  
+  rm(mtx, modelfit, contr, gene_fits, ebayes_smooth, grps, factors_tmp) # Clean env
+}
+
+rm(collapsed_grps) # Clean env
+
+#openxlsx::write.xlsx(top_gist_de, '../results/differential_expression_immunegroups/diff_expr_genes_immunegroups_collapsed_only_gist.xlsx')
+```
+
+```{r include=F}
+# Top DE genes by immunegroup
+genes_keep = lapply(top_gist_de, function(i){
+  top_de_tmp = i %>% arrange(desc(logFC))
+  genes_tmp = top_de_tmp[['gene']][ top_de_tmp[['adj.P.Val']] < 0.05 & top_de_tmp[['logFC']] > 1 ]
+  genes_tmp = genes_tmp[1:20]
+})
+genes_keep = unique(as.vector(unlist(genes_keep)))
+
+# Subset genes and re-scale
+counts_hm_mtx = counts_filt_df[na.omit(match(genes_keep, rownames(counts_filt_df))), ]
+counts_hm_mtx = t(scale(t(counts_hm_mtx)))
+
+# Generate heatmap with subset of DE genes
+# Order samples according to immunogroup assignments and histology
+annots_df_ordered = key_df %>% filter(sarcoma_collapsed == 'gastrointestinal_stromal_tumor') %>%
+  select(c('rna_seq_mod', 'immunegroup', 'nice_name_reassigned', 'primary_met')) %>%
+  arrange(immunegroup, nice_name_reassigned) %>%
+  column_to_rownames('rna_seq_mod')
+
+# Create heatmap annotation object
+hm_ann = HeatmapAnnotation(df=annots_df_ordered %>%
+                             select(c('nice_name_reassigned', 'primary_met', 'immunegroup')),
+                           col=list(nice_name_reassigned=col_pal_hist_clean,
+                                    primary_met=col_pal_met,
+                                    immunegroup=col_pal_dtc))
+
+# Sort data according to MCPcluster
+counts_hm_mtx = counts_hm_mtx[, match(rownames(annots_df_ordered %>% arrange(immunegroup, nice_name_reassigned)), colnames(counts_hm_mtx))]
+
+gexpr_hm = Heatmap(counts_hm_mtx, 
+             cluster_columns=F, cluster_rows=F, 
+             show_row_names=T, show_column_names=F, 
+             show_row_dend=F,
+             row_title='Log-normalized\ngene expression',
+             heatmap_legend_param=list(title="Scaled\ngene expr"),
+             show_column_dend=F,
+             row_names_side="left",
+             column_split=annots_df_ordered[['mcpcounter_dtc']],
+             bottom_annotation=hm_ann,
+             col=hm_col)
+
+pdf('../results/differential_expression_immunegroups/heatmap_subset_de_genes_collapsed_immunegroups_only_gist.pdf', height=8, width=8)
+print(gexpr_hm)
+dev.off()
+
+rm(genes_keep, counts_hm_mtx, gexpr_hm) # Clean env
+```
+
