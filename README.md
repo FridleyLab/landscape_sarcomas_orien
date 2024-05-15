@@ -4,6 +4,8 @@ This repository contains code to reproduce the results of the manuscript "Genomi
 
 Data used in this code is not contained in this repository and is managed by the ORIEN network. When feasible, we have include an example file to help the reader understand the code. Analysis of copy number variation and mutational data was carried out by [Dr. Alex Soupir](https://www.alexsoupir.com/). Analyses of gene expression data were carried out by [Dr. Oscar Ospina](https://github.com/oospina).
 
+# Data Analyses
+
 ## [`somatic_mutations`](https://github.com/FridleyLab/landscape_sarcomas_orien/tree/main/somatic_mutations)
 Processing of somatic mutation data from the ORIEN network's sarcoma cohort can be found in the `somatic_mutations` folder. This includes the filtering of VCF somatic mutation files, annotation with AnnoVar, and then comparision/plots of the resulting somatic mutations.
 
@@ -15,9 +17,44 @@ Fusion data was processed after all other scripts were written then used to upda
 
 ## [`gene_expression_analyses`](https://github.com/FridleyLab/landscape_sarcomas_orien/tree/main/gene_expression_analyses_code)
 The `Gene expression analyses` folder contains code to perform exploratory data analysis, unsupervised clustering, differential gene expression, and gene set enrichment analysis of the sarcoma RNAseq samples in the cohort. Code is also provided for immune cell type deconvolution and survival analysis using Cox models.
+<<<<<<< HEAD
 * `gene_expression_analyses_code/sarcoma_manuscript_figures.Rmd`: Code to reproduce the figures pertaining to RNAseq analysis. The script takes outputs from other scripts included here.
 * `gene_expression_analyses_code/sarcoma_avatar_rnaseq_mcpdeconv.Rmd`: Code to reproduce the immune cell type abundance estimation using devonvolution with MCPcounter.
 * `gene_expression_analyses_code/differential_expression_immunegroups.Rmd`: Code to reproduce the differential gene expression analysis among the MCPcounter-predicted groups.
 * `gene_expression_analyses_code/differential_expression_histologies.Rmd`: Code to reproduce the differential gene expression analysis among the histologies in the data set.
 * `gene_expression_analyses_code/gene_set_enrichment_immunegroups.Rmd`: Code to reproduce the estimation of gene set enrichment scores for each MCPcounter-predicted group.
 * `gene_expression_analyses_code/gene_set_enrichment_histologies.Rmd`: Code to reproduce the estimation of gene set enrichment scores for each histology in the data set.
+=======
+* `gene_expression_analyses_code/sarcoma_manuscript_figures.Rmd`: Code to to reproduce the figures pertaining to RNAseq analysis. The script takes outputs from other scripts included here.
+
+# Analysis Softwares
+
+For somatic mutations, copy number, and fusions: 
+- System programs
+  --
+  - R v4.3.0
+  - Python v3.9.12
+  - BEDTools v2.30.0
+  - BCFtools v1.12
+  - table_annovar.pl v2020-06-08
+  - samtools v1.6
+  - htslib v1.6
+  - perl v5.22.0
+- R Packages
+  --
+  - maftools v2.16.0
+  - tidyverse v2.0.0
+  - openxlsx v4.2.5.2
+  - vcfR v1.15.0
+  - data.table v1.15.4
+  - parallel v4.3.0
+  - plotly v4.10.3
+  - pals v1.8
+  - ComplexHeatmap v2.16.0
+  - pbmcapply v1.5.1
+  - patchwork v1.1.3
+- Python libraries
+  --
+  - HTSeq v2.0.2
+  - pandas v1.5.2
+>>>>>>> 6d0270198b9582aea6c12b81720ee1c54742e6c3
