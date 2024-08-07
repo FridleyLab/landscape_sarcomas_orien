@@ -1,5 +1,5 @@
 ---
-title: "Deconvolution of immune cell types in sarcoma samples using MCP-counter"
+title: "Deconvolution of immune cell types in sarcoma samples using MCPcounter"
 ---
 
 ```{r echo=F, include=F, message=F}
@@ -11,10 +11,10 @@ library('dynamicTreeCut')
 
 ```{r include=F}
 # Read clinical data and patient keys
-key_fp = '../data/ClinicalLinkagewithFiles_20230731_niceNames.xlsx'
+key_fp = '../data/ClinicalLinkagewithFiles_niceNames.xlsx'
 key_df = readxl::read_excel(key_fp, sheet=1, .name_repair='minimal') %>% 
-  select(-1) %>%# Remove columns with row numbers
   janitor::clean_names() %>%
+  filter(!reviewer_remove) %>% # Histologies suggested to be removed by reviewer
   mutate(rna_seq_mod=tolower(.[['rna_seq']]) %>%
            str_replace(., '\\-', '_')) %>%
   filter(disease_type == 'SAR - Sarcoma') %>%
@@ -26,7 +26,6 @@ rm(key_fp) # Clean environment
 ```{r include=F}
 # Samples removed from clinical key data frame
 key_df = key_df %>% 
-  filter(!(rna_seq_mod %in% c("sl362871", "sl482620"))) %>% # Not sarcomas
   filter(rna_seq_mod != "sl424998") # No library prep info on meta data - Unable to apply Combat
 ```
 
@@ -39,17 +38,20 @@ key_df = read_delim(tmb_fp, delim=',', show_col_types=F, name_repair='minimal') 
   mutate(wes_sample=str_extract(Tumor_Sample_Barcode, '^T[\\-A-Z0-9]+_') %>%
            str_replace(., '^T', '') %>%
            str_replace(., '_$', '')) %>%
-  left_join(key_df, ., by=c('wes'='wes_sample'))
+  left_join(key_df, ., by=c('wes'='wes_sample')) %>% 
+  mutate(log_total_perMB=log1p(total_perMB)) %>%
+  mutate(log_total_perMB=case_when(is.na(log_total_perMB) ~ 0, 
+                                   TRUE ~ log_total_perMB))
 
 rm(tmb_fp) # Clean environment
 ```
 
 ```{r include=F}
 # Recode sarcoma types with less than ten samples (many sarcoma types will be difficult to visualize)
-sarcoma_abundant = names(table(key_df[['changed_diagnosis_clean']]))[table(key_df[['changed_diagnosis_clean']]) >= 5]
+sarcoma_abundant = names(table(key_df[['cdc_revision']]))[table(key_df[['cdc_revision']]) >= 5]
 key_df = key_df %>%
-  mutate(sarcoma_collapsed=case_when(changed_diagnosis_clean %in% sarcoma_abundant ~ changed_diagnosis_clean, TRUE ~ 'other')) %>%
-  mutate(nice_name_reassigned=case_when(sarcoma_collapsed == 'other' ~ 'Other', TRUE ~ nice_name_reassigned))
+  mutate(sarcoma_collapsed=case_when(cdc_revision %in% sarcoma_abundant ~ cdc_revision, TRUE ~ 'other')) %>%
+  mutate(cdc_nice_name=case_when(sarcoma_collapsed == 'other' ~ 'Other', TRUE ~ cdc_nice_name))
 
 rm(sarcoma_abundant) # Clean env
 ```
@@ -61,10 +63,11 @@ rm(sarcoma_abundant) # Clean env
 counts_sum_df = data.table::fread(file='../data/transformed_gene_expr_sum_isoforms.csv') %>%
   filter(!(gene_name %in% c('Y_RNA', 'Metazoa_SRP', '5_8S_rRNA', '5S_rRNA', '7SK', 'Vault'))) %>%
   filter(!str_detect(gene_name, "^SNORD|^SNORA|^MIR|^RNA5|^RNU|^U[0-9]+$")) %>% 
+  select(c('gene_name', key_df[['rna_seq_mod']])) %>%
   column_to_rownames(var='gene_name')
 ```
 
-```{r include=F, eval=F}
+```{r include=F, eval=T}
 # Run MCPcounter
 set.seed(12345) # Set seed just in case
 mcp_res = MCPcounter.estimate(as.matrix(counts_sum_df), featuresType='HUGO_symbols')
@@ -73,7 +76,7 @@ rownames(mcp_res) = tolower(rownames(mcp_res)) %>% str_replace_all(., ' ', '_')
 
 # Save scores to file
 mcp_res %>% rownames_to_column('cell_type') %>%
-  write.csv(mcp_res, '../results/immune_groups_deconvolution/mcpcounter_immune_scores.csv', quote=F, row.names=F)
+  write.csv(., '../results/immune_groups_deconvolution/mcpcounter_immune_scores.csv', quote=F, row.names=F)
 ```
 
 ```{r include=F}
@@ -90,11 +93,9 @@ mcp_scale = t(scale(t(mcp_res)))
 ```
 
 ```{r include=F}
-# Create color palettes for heatmaps
-
-# Use Dr. Soupir's palette
+# Histology color palette
 col_pal_hist = readRDS('../data/collapsed_histology_color-vec.rds')
-names(col_pal_hist) = gsub('other', 'Other', names(col_pal_hist))
+names(col_pal_hist)[names(col_pal_hist) == 'other'] = 'Other'
 
 # Create palette for primary/metastatic
 col_pal_met = as.vector(khroma::color('highcontrast')(2))
@@ -102,33 +103,28 @@ names(col_pal_met) = gsub('[-\\(\\)\\/]+', '', unique(key_df[['primary_met']]))
 
 # Create data frame with heatmap annotations 
 annots_df = key_df %>%
-  select(c('rna_seq_mod', 'nice_name_reassigned', 'primary_met')) %>%
+  select(c('rna_seq_mod', 'cdc_nice_name', 'primary_met')) %>%
   column_to_rownames(var='rna_seq_mod')
-
-#rm(sarcoma_type) # Clean environment
 ```
 
 ```{r include=F}
 # Add TMB data to annotation data frame for top barplot (for heatmap annotation)
 annots_df = annots_df %>%
   rownames_to_column(var='rna_seq_mod') %>%
-  left_join(., key_df %>% select(c('rna_seq_mod', 'total_perMB')), by='rna_seq_mod') %>%
-  mutate(log_total_perMB=log1p(total_perMB)) %>%
-  mutate(log_total_perMB=case_when(is.na(log_total_perMB) ~ 0, TRUE ~ log_total_perMB)) %>%
+  left_join(., key_df %>% select(c('rna_seq_mod', 'log_total_perMB')), by='rna_seq_mod') %>%
   column_to_rownames(var='rna_seq_mod')
 ```
 
-```{r include=F, eval=F}
+```{r include=F, eval=T}
 # Do hierarchical clustering on MCPcounter scores
 mtx_hc_col = hclust(dist(t(mcp_scale)), method="ward.D")
 mtx_hc_row = hclust(dist(mcp_scale), method="ward.D")
 
 # Run dynamicTreeCuts on the MCPscores and hclust to classify sarcoma samples
 tree_cuts = tibble(
-  immunegroup=cutreeDynamic(mtx_hc_col, method='hybrid', distM=as.matrix(dist(t(mcp_scale))), verbose=F) %>%
+  immunegroup=cutreeDynamic(mtx_hc_col, method='hybrid', distM=as.matrix(dist(t(mcp_scale))), deepSplit=1.75, verbose=F) %>%
     paste0('dtc', .) %>%
-    factor(., levels= c('dtc4', 'dtc1', 'dtc5', 'dtc3', 'dtc2')) %>%
-    recode(., 'dtc4'='A', 'dtc1'='B', 'dtc5'='C', 'dtc3'='D', 'dtc2'='E'),
+    recode(., 'dtc1'='B', 'dtc2'='A', 'dtc3'='E', 'dtc4'='D', 'dtc5'='C'),
   rna_seq_mod=colnames(mcp_scale)
 )
 
@@ -148,7 +144,7 @@ rm(tree_cuts) # Clean env
 # Save annotations to text file for additional plotting
 write.csv(annots_df %>%
             rownames_to_column(var='samplename'), 
-          '../data/immune_groups_deconvolution/mcpcounter_immune_clusters.csv', row.names=F, quote=F)
+          '../data/immune_groups_deconvolution/mcpcounter_immune_clusters.csv', quote=T, row.names=F)
 ```
 
 ```{r include=F}
@@ -282,8 +278,8 @@ hm_ann_bar = HeatmapAnnotation(log_mut_per_mb=anno_barplot(annots_df[, 'log_tota
 
 # Create color annotation for heatmap
 hm_ann = HeatmapAnnotation(df=annots_df %>%
-                             select(c('nice_name_reassigned', 'primary_met', 'immunegroup')),
-                           col=list(nice_name_reassigned=col_pal_hist,
+                             select(c('cdc_nice_name', 'primary_met', 'immunegroup')),
+                           col=list(cdc_nice_name=col_pal_hist,
                                     primary_met=col_pal_met,
                                     immunegroup=col_dtc))
 
@@ -309,15 +305,16 @@ p1 = Heatmap(mcp_scale,
 ```{r include=F}
 # Make heatmap ordered by immunegroup and histology
 annots_df = annots_df %>%
-  arrange(immunegroup, nice_name_reassigned)
+  arrange(immunegroup, cdc_nice_name)
 
 # Create barplot annotation for heatmap
 hm_ann_bar = HeatmapAnnotation(log_mut_per_mb=anno_barplot(annots_df[, 'log_total_perMB', drop=F]))
 
 # Create color annotation for heatmap
 hm_ann = HeatmapAnnotation(df=annots_df %>%
-                             select(c('nice_name_reassigned', 'primary_met', 'immunegroup')),
-                           col=list(nice_name_reassigned=col_pal_hist,
+                             select(c('cdc_nice_name', 'primary_met', 'immunegroup')) %>%
+                             mutate(immunegroup=factor(.[['immunegroup']], levels=LETTERS[1:5])),
+                           col=list(cdc_nice_name=col_pal_hist,
                                     primary_met=col_pal_met,
                                     immunegroup=col_dtc))
 
@@ -350,13 +347,13 @@ rm(p1, p2, hm_ann, hm_col, hm_ann_bar, mtx_hc_row, mtx_hc_col) # Clean env
 ```{r include=F}
 # Create stacked barplot showing histologies within each DTC/hclust cluster
 sarcomas_dtc = annots_df %>%
-  group_by(immunegroup, nice_name_reassigned) %>%
+  group_by(immunegroup, cdc_nice_name) %>%
   summarize(count=n()) %>%
   ungroup()
 
 # Barplot as proportions 
 p1 = ggplot(sarcomas_dtc, aes(x=immunegroup, y=count)) +
-  geom_bar(aes(fill=nice_name_reassigned), position="fill", stat="identity") +
+  geom_bar(aes(fill=cdc_nice_name), position="fill", stat="identity") +
   ylab('Percent samples') +
   xlab('Immune clusters (dynamicTreeCuts)') +
   scale_fill_manual(values=col_pal_hist) +
@@ -364,7 +361,7 @@ p1 = ggplot(sarcomas_dtc, aes(x=immunegroup, y=count)) +
 
 # Barplot as absolute sample numbers
 p2 = ggplot(sarcomas_dtc, aes(x=immunegroup, y=count)) +
-  geom_bar(aes(fill=nice_name_reassigned), stat="identity") +
+  geom_bar(aes(fill=cdc_nice_name), stat="identity") +
   ylab('Samples') +
   xlab('Immune clusters (dynamicTreeCuts)') +
   scale_fill_manual(values=col_pal_hist) +

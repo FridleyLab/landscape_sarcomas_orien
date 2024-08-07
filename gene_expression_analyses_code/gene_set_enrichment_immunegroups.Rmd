@@ -11,10 +11,10 @@ library('msigdbr')
 ### Data read and preparation
 ```{r include=F}
 # Read clinical data and patient keys
-key_fp = '../data/ClinicalLinkagewithFiles_20230731_niceNames.xlsx'
+key_fp = '../data/ClinicalLinkagewithFiles_niceNames.xlsx'
 key_df = readxl::read_excel(key_fp, sheet=1, .name_repair='minimal') %>%
-  #select(-1) %>%# Remove columns with row numbers
   janitor::clean_names() %>%
+  filter(!reviewer_remove) %>% # Histologies suggested to be removed by reviewer
   mutate(rna_seq_mod=tolower(.[['rna_seq']]) %>%
            str_replace(., '\\-', '_')) %>%
   filter(disease_type == 'SAR - Sarcoma') %>%
@@ -26,7 +26,6 @@ rm(key_fp) # Clean environment
 ```{r include=F}
 # Samples removed from clinical key data frame
 key_df = key_df %>% 
-  filter(!(rna_seq_mod %in% c("sl362871", "sl482620"))) %>% # Not sarcomas
   filter(rna_seq_mod != "sl424998") # No library prep info on meta data - Unable to apply Combat
 ```
 
@@ -44,10 +43,10 @@ rm(dtc_fp) # Clean environment
 
 ```{r include=F}
 # Recode sarcoma types with less than ten samples (many sarcoma types will be difficult to visualize)
-sarcoma_abundant = names(table(key_df[['changed_diagnosis_clean']]))[table(key_df[['changed_diagnosis_clean']]) >= 5]
+sarcoma_abundant = names(table(key_df[['cdc_revision']]))[table(key_df[['cdc_revision']]) >= 5]
 key_df = key_df %>%
-  mutate(sarcoma_collapsed=case_when(changed_diagnosis_clean %in% sarcoma_abundant ~ changed_diagnosis_clean, TRUE ~ 'other')) %>%
-  mutate(nice_name_reassigned=case_when(sarcoma_collapsed == 'other' ~ 'Other', TRUE ~ nice_name_reassigned))
+  mutate(sarcoma_collapsed=case_when(cdc_revision %in% sarcoma_abundant ~ cdc_revision, TRUE ~ 'other')) %>%
+  mutate(cdc_nice_name=case_when(sarcoma_collapsed == 'other' ~ 'Other', TRUE ~ cdc_nice_name))
 
 rm(sarcoma_abundant) # Clean env
 ```

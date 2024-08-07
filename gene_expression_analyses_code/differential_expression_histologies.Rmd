@@ -12,8 +12,8 @@ library('ComplexHeatmap')
 # Read clinical data and patient keys
 key_fp = '../data/ClinicalLinkagewithFiles_niceNames.xlsx'
 key_df = readxl::read_excel(key_fp, sheet=1, .name_repair='minimal') %>%
-  #select(-1) %>%# Remove columns with row numbers
   janitor::clean_names() %>%
+  filter(!reviewer_remove) %>% # Histologies suggested to be removed by reviewer
   mutate(rna_seq_mod=tolower(.[['rna_seq']]) %>%
            str_replace(., '\\-', '_')) %>%
   filter(disease_type == 'SAR - Sarcoma') %>%
@@ -25,7 +25,6 @@ rm(key_fp) # Clean environment
 ```{r include=F}
 # Samples removed from clinical key data frame
 key_df = key_df %>% 
-  filter(!(rna_seq_mod %in% c("sl362871", "sl482620"))) %>% # Not sarcomas
   filter(rna_seq_mod != "sl424998") # No library prep info on meta data - Unable to apply Combat
 ```
 
@@ -43,10 +42,10 @@ rm(dtc_fp) # Clean environment
 
 ```{r include=F}
 # Recode sarcoma types with less than ten samples (many sarcoma types will be difficult to visualize)
-sarcoma_abundant = names(table(key_df[['changed_diagnosis_clean']]))[table(key_df[['changed_diagnosis_clean']]) >= 5]
+sarcoma_abundant = names(table(key_df[['cdc_revision']]))[table(key_df[['cdc_revision']]) >= 5]
 key_df = key_df %>%
-  mutate(sarcoma_collapsed=case_when(changed_diagnosis_clean %in% sarcoma_abundant ~ changed_diagnosis_clean, TRUE ~ 'other')) %>%
-  mutate(nice_name_reassigned=case_when(sarcoma_collapsed == 'other' ~ 'Other', TRUE ~ nice_name_reassigned))
+  mutate(sarcoma_collapsed=case_when(cdc_revision %in% sarcoma_abundant ~ cdc_revision, TRUE ~ 'other')) %>%
+  mutate(cdc_nice_name=case_when(sarcoma_collapsed == 'other' ~ 'Other', TRUE ~ cdc_nice_name))
 
 rm(sarcoma_abundant) # Clean env
 ```
@@ -58,6 +57,7 @@ rm(sarcoma_abundant) # Clean env
 counts_sum_df = data.table::fread(file='../data/transformed_gene_expr_sum_isoforms.csv') %>%
   filter(!(gene_name %in% c('Y_RNA', 'Metazoa_SRP', '5_8S_rRNA', '5S_rRNA', '7SK', 'Vault'))) %>%
   filter(!str_detect(gene_name, "^SNORD|^SNORA|^MIR|^RNA5|^RNU|^U[0-9]+$")) %>% 
+  select(c('gene_name', key_df[['rna_seq_mod']])) %>%
   column_to_rownames(var='gene_name')
 ```
 
@@ -76,7 +76,7 @@ grps = list(
   myxlipo_grps = ifelse(key_df[['sarcoma_collapsed']] == 'myxoid_liposarcoma', 'myxoid_lipo', 'other'),
   ewing_grps = ifelse(key_df[['sarcoma_collapsed']] == 'ewing_sarcoma', 'ewing_sarcoma', 'other'),
   lipo_grps = ifelse(key_df[['sarcoma_collapsed']] %in% c('dedifferentiated_liposarcoma', 
-                                                          'liposarcoma', 
+                                                          'liposarcoma_NOS', 
                                                           'liposarcoma_well_differentiated'), 'lipo', 'other'))
 
 # Find DE genes for certain histologies
@@ -103,17 +103,9 @@ openxlsx::write.xlsx(top_de, '../results/differential_expression_histologies/dif
 
 #### PLOTS OF GENES AMONG IMMUNEGROUPS
 ```{r include=F}
-# Create color palette (seed set to replicate color order)
-set.seed(32154)
-sarcoma_type = unique(key_df[['sarcoma_collapsed']])
-col_pal_hist = sample(as.vector(khroma::color('discreterainbow', force=T)(length(sarcoma_type))))
-names(col_pal_hist) = unique(key_df[['sarcoma_collapsed']])
-
-# Create color palette for cleaned names
-col_pal_hist_clean = col_pal_hist
-for(i in 1:length(col_pal_hist_clean)){
-  names(col_pal_hist_clean)[i] = unique(key_df[['nice_name_reassigned']][ key_df[['sarcoma_collapsed']] == names(col_pal_hist_clean)[i] ])
-}
+# Histology color palette
+col_pal_hist = readRDS('../data/collapsed_histology_color-vec.rds')
+names(col_pal_hist)[names(col_pal_hist) == 'other'] = 'Other'
 
 # Create color palettes for primary/met and NMF categories
 col_pal_met = as.vector(khroma::color('highcontrast')(2))
@@ -122,22 +114,20 @@ names(col_pal_met) = gsub('[-\\(\\)\\/]+', '', unique(key_df[['primary_met']]))
 # Create color palettes for DTC clusters
 col_pal_dtc = scales::hue_pal()(length(unique(key_df[['immunegroup']])))
 names(col_pal_dtc) = c('A', 'B', 'C', 'D', 'E')
-
-rm(sarcoma_type) # Clean env
 ```
 
 ```{r include=F}
 # Generate heatmap with subset of DE genes
 # Order samples according to immunogroup assignments and histology
 annots_df_ordered = key_df %>%
-  select(c('rna_seq_mod', 'immunegroup', 'nice_name_reassigned', 'primary_met')) %>%
-  arrange(immunegroup, nice_name_reassigned) %>%
+  select(c('rna_seq_mod', 'immunegroup', 'cdc_nice_name', 'primary_met')) %>%
+  arrange(immunegroup, cdc_nice_name) %>%
   column_to_rownames('rna_seq_mod')
 
 # Create heatmap annotation object
 hm_ann = HeatmapAnnotation(df=annots_df_ordered %>%
-                             select(c('nice_name_reassigned', 'primary_met', 'immunegroup')),
-                           col=list(nice_name_reassigned=col_pal_hist_clean,
+                             select(c('cdc_nice_name', 'primary_met', 'immunegroup')),
+                           col=list(cdc_nice_name=col_pal_hist,
                                     primary_met=col_pal_met,
                                     immunegroup=col_pal_dtc))
 
@@ -159,8 +149,8 @@ genes_keep = unique(as.vector(unlist(genes_keep)))
 counts_hm_mtx = counts_sum_df[na.omit(match(genes_keep, rownames(counts_sum_df))) , ]
 counts_hm_mtx = t(scale(t(counts_hm_mtx)))
 
-# Sort data according to MCPcluster
-counts_hm_mtx = counts_hm_mtx[, match(rownames(annots_df_ordered %>% arrange(immunegroup, nice_name_reassigned)), colnames(counts_hm_mtx))]
+# Sort data according to MCPcounter
+counts_hm_mtx = counts_hm_mtx[, match(rownames(annots_df_ordered %>% arrange(immunegroup, cdc_nice_name)), colnames(counts_hm_mtx))]
 
 # Create and plot heatmap
 gexpr_hm = Heatmap(counts_hm_mtx, 
@@ -197,7 +187,7 @@ counts_hm_mtx = counts_sum_df[na.omit(match(genes_keep, rownames(counts_sum_df))
 counts_hm_mtx = t(scale(t(counts_hm_mtx)))
 
 # Sort data according to MCPcluster
-counts_hm_mtx = counts_hm_mtx[, match(rownames(annots_df_ordered %>% arrange(immunegroup, nice_name_reassigned)), colnames(counts_hm_mtx))]
+counts_hm_mtx = counts_hm_mtx[, match(rownames(annots_df_ordered %>% arrange(immunegroup, cdc_nice_name)), colnames(counts_hm_mtx))]
 
 # Create and plot heatmap
 gexpr_hm = Heatmap(counts_hm_mtx, 
@@ -212,7 +202,7 @@ gexpr_hm = Heatmap(counts_hm_mtx,
              bottom_annotation=hm_ann,
              col=hm_col)
 
-pdf('../results/differential_expression_histologies/heatmap_subset_de_genes_histologies_small.pdf', height=4, width=8)
+pdf('../results/differential_expression_histologies/heatmap_subset_de_genes_histologies_small.pdf', height=10, width=8)
 print(gexpr_hm)
 dev.off()
 

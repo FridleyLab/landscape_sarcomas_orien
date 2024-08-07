@@ -13,8 +13,8 @@ library('ComplexHeatmap')
 # Read clinical data and patient keys
 key_fp = '../data/ClinicalLinkagewithFiles_niceNames.xlsx'
 key_df = readxl::read_excel(key_fp, sheet=1, .name_repair='minimal') %>%
-  #select(-1) %>%# Remove columns with row numbers
   janitor::clean_names() %>%
+  filter(!reviewer_remove) %>% # Histologies suggested to be removed by reviewer
   mutate(rna_seq_mod=tolower(.[['rna_seq']]) %>%
            str_replace(., '\\-', '_')) %>%
   filter(disease_type == 'SAR - Sarcoma') %>%
@@ -26,7 +26,6 @@ rm(key_fp) # Clean environment
 ```{r include=F}
 # Samples removed from clinical key data frame
 key_df = key_df %>% 
-  filter(!(rna_seq_mod %in% c("sl362871", "sl482620"))) %>% # Not sarcomas
   filter(rna_seq_mod != "sl424998") # No library prep info on meta data - Unable to apply Combat
 ```
 
@@ -44,10 +43,10 @@ rm(dtc_fp) # Clean environment
 
 ```{r include=F}
 # Recode sarcoma types with less than ten samples (many sarcoma types will be difficult to visualize)
-sarcoma_abundant = names(table(key_df[['changed_diagnosis_clean']]))[table(key_df[['changed_diagnosis_clean']]) >= 5]
+sarcoma_abundant = names(table(key_df[['cdc_revision']]))[table(key_df[['cdc_revision']]) >= 5]
 key_df = key_df %>%
-  mutate(sarcoma_collapsed=case_when(changed_diagnosis_clean %in% sarcoma_abundant ~ changed_diagnosis_clean, TRUE ~ 'other')) %>%
-  mutate(nice_name_reassigned=case_when(sarcoma_collapsed == 'other' ~ 'Other', TRUE ~ nice_name_reassigned))
+  mutate(sarcoma_collapsed=case_when(cdc_revision %in% sarcoma_abundant ~ cdc_revision, TRUE ~ 'other')) %>%
+  mutate(cdc_nice_name=case_when(sarcoma_collapsed == 'other' ~ 'Other', TRUE ~ cdc_nice_name))
 
 rm(sarcoma_abundant) # Clean env
 ```
@@ -59,6 +58,7 @@ rm(sarcoma_abundant) # Clean env
 counts_sum_df = data.table::fread(file='../data/transformed_gene_expr_sum_isoforms.csv') %>%
   filter(!(gene_name %in% c('Y_RNA', 'Metazoa_SRP', '5_8S_rRNA', '5S_rRNA', '7SK', 'Vault'))) %>%
   filter(!str_detect(gene_name, "^SNORD|^SNORA|^MIR|^RNA5|^RNU|^U[0-9]+$")) %>% 
+  select(c('gene_name', key_df[['rna_seq_mod']])) %>%
   column_to_rownames(var='gene_name')
 ```
 
@@ -94,7 +94,7 @@ for(i in unique(key_df[['immunegroup']])){
   rm(mtx, modelfit, contr, gene_fits, ebayes_smooth, grps, factors_tmp) # Clean env
 }
 
-#openxlsx::write.xlsx(top_de, '../results/differential_expression_immunegroups/diff_expr_genes_immunegroups.xlsx')
+openxlsx::write.xlsx(top_de, '../results/differential_expression_immunegroups/diff_expr_genes_immunegroups.xlsx')
 ```
 
 ```{r include=F}
@@ -130,7 +130,7 @@ for(i in collapsed_grps){
 
 rm(collapsed_grps) # Clean env
 
-#openxlsx::write.xlsx(top_collapsed_de, '../results/differential_expression_immunegroups/diff_expr_genes_immunegroups_collapsed.xlsx')
+openxlsx::write.xlsx(top_collapsed_de, '../results/differential_expression_immunegroups/diff_expr_genes_immunegroups_collapsed.xlsx')
 ```
 
 ```{r include=F}
@@ -156,7 +156,7 @@ for(i in unique(key_df[['immunegroup']])){
   rm(mtx, modelfit, contr, ebayes_smooth, grps, coefs_test) # Clean env
 }
 
-#openxlsx::write.xlsx(top_itx_de, '../results/differential_expression_immunegroups/diff_expr_genes_immunegroups_histology.xlsx')
+openxlsx::write.xlsx(top_itx_de, '../results/differential_expression_immunegroups/diff_expr_genes_immunegroups_histology.xlsx')
 ```
 
 ```{r include=F}
@@ -182,22 +182,14 @@ for(i in unique(key_df[['immunegroup']])){
   rm(mtx, modelfit, contr, ebayes_smooth, grps, coefs_test) # Clean env
 }
 
-#openxlsx::write.xlsx(top_itx_de, '../results/differential_expression_immunegroups/diff_expr_genes_immunegroups_primarymetastasis.xlsx')
+openxlsx::write.xlsx(top_itx_de, '../results/differential_expression_immunegroups/diff_expr_genes_immunegroups_primarymetastasis.xlsx')
 ```
 
 #### PLOTS OF GENES AMONG IMMUNEGROUPS
 ```{r include=F}
-# Create color palette (seed set to replicate color order)
-set.seed(32154)
-sarcoma_type = unique(key_df[['sarcoma_collapsed']])
-col_pal_hist = sample(as.vector(khroma::color('discreterainbow', force=T)(length(sarcoma_type))))
-names(col_pal_hist) = unique(key_df[['sarcoma_collapsed']])
-
-# Create color palette for cleaned names
-col_pal_hist_clean = col_pal_hist
-for(i in 1:length(col_pal_hist_clean)){
-  names(col_pal_hist_clean)[i] = unique(key_df[['nice_name_reassigned']][ key_df[['sarcoma_collapsed']] == names(col_pal_hist_clean)[i] ])
-}
+# Histology color palette
+col_pal_hist = readRDS('../data/collapsed_histology_color-vec.rds')
+names(col_pal_hist)[names(col_pal_hist) == 'other'] = 'Other'
 
 # Create color palettes for primary/met and NMF categories
 col_pal_met = as.vector(khroma::color('highcontrast')(2))
@@ -206,8 +198,6 @@ names(col_pal_met) = gsub('[-\\(\\)\\/]+', '', unique(key_df[['primary_met']]))
 # Create color palettes for DTC clusters
 col_pal_dtc = scales::hue_pal()(length(unique(key_df[['immunegroup']])))
 names(col_pal_dtc) = c('A', 'B', 'C', 'D', 'E')
-
-rm(sarcoma_type) # Clean env
 ```
 
 ```{r include=F}
@@ -245,23 +235,19 @@ umap_df = umap_res[['layout']] %>%
   select(1:3) %>%
   rownames_to_column(var='sample') %>%
   left_join(., key_df %>%
-              select(sample=rna_seq_mod, sarcoma_collapsed, immunegroup, nice_name_reassigned), by='sample')
+              select(sample=rna_seq_mod, sarcoma_collapsed, immunegroup, cdc_nice_name), by='sample')
 
 up1 = ggplot(umap_df) +
-  geom_point(aes(x=V1, y=V2, color=nice_name_reassigned), size=0.7, alpha=0.7) +
-  ggtitle('Sarcoma histology\n(DE genes among immunegroups)') +
-  xlab(paste0('UMAP1')) + ylab(paste0('UMAP2')) +
-  labs(color=NULL) +
-  scale_color_manual(values=col_pal_hist_clean) +
+  geom_point(aes(x=V1, y=V2, color=cdc_nice_name), size=0.7, alpha=0.7) +
+  labs(title='Sarcoma histology\n(DE genes among immunegroups)', color=NULL) +
+  scale_color_manual(values=col_pal_hist) +
   guides(color=guide_legend(override.aes=list(size=2, alpha=1), ncol=1)) +
   coord_fixed(1) +
   theme_void()
 
 up2 = ggplot(umap_df) +
   geom_point(aes(x=V1, y=V2, color=immunegroup), size=0.7, alpha=0.7) +
-  ggtitle('Immunogroup\n(DE genes among immunegroups)') +
-  xlab(paste0('UMAP1')) + ylab(paste0('UMAP2')) +
-  labs(color=NULL) +
+  labs(title='Immunogroup\n(DE genes among immunegroups)', color=NULL) +
   guides(color=guide_legend(override.aes=list(size=2, alpha=1), ncol=1)) +
   coord_fixed(1) +
   theme_void()
@@ -278,14 +264,14 @@ rm(up1, up2, umap_df, umap_res, counts_filt_t) # Clean env
 # Generate heatmap with subset of DE genes
 # Order samples according to immunogroup assignments and histology
 annots_df_ordered = key_df %>%
-  select(c('rna_seq_mod', 'immunegroup', 'nice_name_reassigned', 'primary_met')) %>%
-  arrange(immunegroup, nice_name_reassigned) %>%
+  select(c('rna_seq_mod', 'immunegroup', 'cdc_nice_name', 'primary_met')) %>%
+  arrange(immunegroup, cdc_nice_name) %>%
   column_to_rownames('rna_seq_mod')
 
 # Create heatmap annotation object
 hm_ann = HeatmapAnnotation(df=annots_df_ordered %>%
-                             select(c('nice_name_reassigned', 'primary_met', 'immunegroup')),
-                           col=list(nice_name_reassigned=col_pal_hist_clean,
+                             select(c('cdc_nice_name', 'primary_met', 'immunegroup')),
+                           col=list(cdc_nice_name=col_pal_hist,
                                     primary_met=col_pal_met,
                                     immunegroup=col_pal_dtc))
 
@@ -308,7 +294,7 @@ counts_hm_mtx = counts_filt_df[na.omit(match(genes_keep, rownames(counts_filt_df
 counts_hm_mtx = t(scale(t(counts_hm_mtx)))
 
 # Sort data according to MCPcluster
-counts_hm_mtx = counts_hm_mtx[, match(rownames(annots_df_ordered %>% arrange(immunegroup, nice_name_reassigned)), colnames(counts_hm_mtx))]
+counts_hm_mtx = counts_hm_mtx[, match(rownames(annots_df_ordered %>% arrange(immunegroup, cdc_nice_name)), colnames(counts_hm_mtx))]
 
 # Create and plot heatmap
 gexpr_hm = Heatmap(counts_hm_mtx, 
@@ -359,23 +345,19 @@ umap_df = umap_res[['layout']] %>%
   select(1:3) %>%
   rownames_to_column(var='sample') %>%
   left_join(., key_df %>%
-              select(sample=rna_seq_mod, sarcoma_collapsed, immunegroup, nice_name_reassigned), by='sample')
+              select(sample=rna_seq_mod, sarcoma_collapsed, immunegroup, cdc_nice_name), by='sample')
 
 up1 = ggplot(umap_df) +
-  geom_point(aes(x=V1, y=V2, color=nice_name_reassigned), size=0.7, alpha=0.7) +
-  ggtitle('Sarcoma histology\n(DE genes among collapsed immunegroups)') +
-  xlab(paste0('UMAP1')) + ylab(paste0('UMAP2')) +
-  labs(color=NULL) +
-  scale_color_manual(values=col_pal_hist_clean) +
+  geom_point(aes(x=V1, y=V2, color=cdc_nice_name), size=0.7, alpha=0.7) +
+  labs(ttle='Sarcoma histology\n(DE genes among collapsed immunegroups)', color=NULL) +
+  scale_color_manual(values=col_pal_hist) +
   guides(color=guide_legend(override.aes=list(size=2, alpha=1), ncol=1)) +
   coord_fixed(1) +
   theme_void()
 
 up2 = ggplot(umap_df) +
   geom_point(aes(x=V1, y=V2, color=immunegroup), size=0.7, alpha=0.7) +
-  ggtitle('Immunogroup\n(DE genes among collapsed immunegroups)') +
-  xlab(paste0('UMAP1')) + ylab(paste0('UMAP2')) +
-  labs(color=NULL) +
+  labs(title='Immunogroup\n(DE genes among collapsed immunegroups)', color=NULL) +
   guides(color=guide_legend(override.aes=list(size=2, alpha=1), ncol=1)) +
   coord_fixed(1) +
   theme_void()
@@ -402,7 +384,7 @@ counts_hm_mtx = counts_filt_df[na.omit(match(genes_keep, rownames(counts_filt_df
 counts_hm_mtx = t(scale(t(counts_hm_mtx)))
 
 # Sort data according to MCPcluster
-counts_hm_mtx = counts_hm_mtx[, match(rownames(annots_df_ordered %>% arrange(immunegroup, nice_name_reassigned)), colnames(counts_hm_mtx))]
+counts_hm_mtx = counts_hm_mtx[, match(rownames(annots_df_ordered %>% arrange(immunegroup, cdc_nice_name)), colnames(counts_hm_mtx))]
 
 gexpr_hm = Heatmap(counts_hm_mtx, 
              cluster_columns=F, cluster_rows=F, 
@@ -476,19 +458,19 @@ counts_hm_mtx = t(scale(t(counts_hm_mtx)))
 # Generate heatmap with subset of DE genes
 # Order samples according to immunogroup assignments and histology
 annots_df_ordered = key_df %>% filter(sarcoma_collapsed == 'gastrointestinal_stromal_tumor') %>%
-  select(c('rna_seq_mod', 'immunegroup', 'nice_name_reassigned', 'primary_met')) %>%
-  arrange(immunegroup, nice_name_reassigned) %>%
+  select(c('rna_seq_mod', 'immunegroup', 'cdc_nice_name', 'primary_met')) %>%
+  arrange(immunegroup, cdc_nice_name) %>%
   column_to_rownames('rna_seq_mod')
 
 # Create heatmap annotation object
 hm_ann = HeatmapAnnotation(df=annots_df_ordered %>%
-                             select(c('nice_name_reassigned', 'primary_met', 'immunegroup')),
-                           col=list(nice_name_reassigned=col_pal_hist_clean,
+                             select(c('cdc_nice_name', 'primary_met', 'immunegroup')),
+                           col=list(cdc_nice_name=col_pal_hist,
                                     primary_met=col_pal_met,
                                     immunegroup=col_pal_dtc))
 
 # Sort data according to MCPcluster
-counts_hm_mtx = counts_hm_mtx[, match(rownames(annots_df_ordered %>% arrange(immunegroup, nice_name_reassigned)), colnames(counts_hm_mtx))]
+counts_hm_mtx = counts_hm_mtx[, match(rownames(annots_df_ordered %>% arrange(immunegroup, cdc_nice_name)), colnames(counts_hm_mtx))]
 
 gexpr_hm = Heatmap(counts_hm_mtx, 
              cluster_columns=F, cluster_rows=F, 
