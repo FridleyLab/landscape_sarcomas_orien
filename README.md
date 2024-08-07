@@ -2,7 +2,7 @@
 
 This repository contains code to reproduce the results of the manuscript "Genomic, transcriptomic, and immunogenomic landscape of over 1,300 sarcomas of diverse histology subtypes: a report from the ORIEN collaborative network". The manuscript can be obtained from [LINK/DOI].
 
-Data used in this code is not contained in this repository and is managed by the ORIEN network. When feasible, we have include an example file to help the reader understand the code. Analysis of copy number variation and mutational data was carried out by [Dr. Alex Soupir](https://www.alexsoupir.com/). Analyses of gene expression data were carried out by [Dr. Oscar Ospina](https://github.com/oospina).
+Data used in this code is not contained in this repository and is managed by the ORIEN network. When feasible, we have include an example file to help the reader understand the code. Analysis of copy number variation and mutational data was carried out by [Dr. Alex Soupir](https://www.alexsoupir.com/). Analyses of gene expression data were carried out by [Oscar Ospina](https://github.com/oospina).
 
 # Data Analyses
 

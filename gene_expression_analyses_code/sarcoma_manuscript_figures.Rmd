@@ -16,6 +16,7 @@ library('survminer')
 key_fp = '../data/ClinicalLinkagewithFiles_niceNames.xlsx'
 key_df = readxl::read_excel(key_fp, sheet=1, .name_repair='minimal') %>%
   janitor::clean_names() %>%
+  filter(!reviewer_remove) %>% # Histologies suggested to be removed by reviewer
   mutate(rna_seq_mod=tolower(.[['rna_seq']]) %>%
            str_replace(., '\\-', '_')) %>%
   filter(disease_type == 'SAR - Sarcoma') %>%
@@ -31,7 +32,6 @@ rm(key_fp) # Clean environment
 ```{r include=F}
 # Samples removed from clinical key data frame
 key_df = key_df %>% 
-  filter(!(rna_seq_mod %in% c("sl362871", "sl482620"))) %>% # Not sarcomas
   filter(rna_seq_mod != "sl424998") # No library prep info on meta data - Unable to apply Combat
 ```
 
@@ -80,10 +80,10 @@ rm(dtc_fp) # Clean environment
 
 ```{r include=F}
 # Recode sarcoma types with less than ten samples (many sarcoma types will be difficult to visualize)
-sarcoma_abundant = names(table(key_df[['changed_diagnosis_clean']]))[table(key_df[['changed_diagnosis_clean']]) >= 5]
+sarcoma_abundant = names(table(key_df[['cdc_revision']]))[table(key_df[['cdc_revision']]) >= 5]
 key_df = key_df %>%
-  mutate(sarcoma_collapsed=case_when(changed_diagnosis_clean %in% sarcoma_abundant ~ changed_diagnosis_clean, TRUE ~ 'other')) %>%
-  mutate(nice_name_reassigned=case_when(sarcoma_collapsed == 'other' ~ 'Other', TRUE ~ nice_name_reassigned))
+  mutate(sarcoma_collapsed=case_when(cdc_revision %in% sarcoma_abundant ~ cdc_revision, TRUE ~ 'other')) %>%
+  mutate(cdc_nice_name=case_when(sarcoma_collapsed == 'other' ~ 'Other', TRUE ~ cdc_nice_name))
 
 rm(sarcoma_abundant) # Clean env
 ```
@@ -95,6 +95,7 @@ rm(sarcoma_abundant) # Clean env
 counts_sum_df = data.table::fread(file='../data/transformed_gene_expr_sum_isoforms.csv') %>%
   filter(!(gene_name %in% c('Y_RNA', 'Metazoa_SRP', '5_8S_rRNA', '5S_rRNA', '7SK', 'Vault'))) %>%
   filter(!str_detect(gene_name, "^SNORD|^SNORA|^MIR|^RNA5|^RNU|^U[0-9]+$")) %>% 
+  select(c('gene_name', key_df[['rna_seq_mod']])) %>%
   column_to_rownames(var='gene_name')
 ```
 
@@ -102,7 +103,7 @@ counts_sum_df = data.table::fread(file='../data/transformed_gene_expr_sum_isofor
 # Histology color palette.
 # R object containing color palette used in CNV analyses
 col_pal_hist = readRDS('../data/collapsed_histology_color-vec.rds')
-names(col_pal_hist) = gsub('other', 'Other', names(col_pal_hist))
+names(col_pal_hist)[names(col_pal_hist) == 'other'] = 'Other'
 
 # Create color palettes for primary/met and NMF categories
 col_pal_met = as.vector(khroma::color('highcontrast')(2))
@@ -133,6 +134,7 @@ counts_highvar_scaled_t = scale(t(counts_highvar_df), center=apply(counts_highva
 umap_config = umap.defaults
 umap_config$random_state = 12345
 umap_config$n_components = 3
+umap_config$spread = 2
 
 # Run UMAP
 umap_res = umap(counts_highvar_scaled_t, config=umap_config)
@@ -148,7 +150,7 @@ umap_df = umap_res[['layout']] %>%
   rownames_to_column(var='sample') %>%
   left_join(., key_df %>%
               select(sample=rna_seq_mod, sarcoma_collapsed, immunegroup, 
-                     specimen_type_collapsed, site_recode, nice_name_reassigned), by='sample')
+                     specimen_type_collapsed, site_recode, cdc_nice_name), by='sample')
 
 rm(umap_res) # Clean env
 ```
@@ -156,21 +158,17 @@ rm(umap_res) # Clean env
 ```{r include=F}
 # Create UMAP plots colored by histologies
 up1 = ggplot(umap_df) +
-  geom_point(aes(x=V1, y=V2, color=nice_name_reassigned), size=0.7, alpha=0.9) +
-  ggtitle('Sarcoma histology (UMAP)') +
-  xlab(paste0('UMAP1')) + ylab(paste0('UMAP2')) +
-  labs(color=NULL) +
+  geom_point(aes(x=V1, y=V2, color=cdc_nice_name), size=1, alpha=0.9) +
+  labs(title='Sarcoma histology (UMAP)', color=NULL) +
   scale_color_manual(values=col_pal_hist) +
   guides(color=guide_legend(override.aes=list(size=2, alpha=1), ncol=1)) +
   coord_fixed(1) +
   theme_void()
 
 up2 = ggplot(umap_df %>%
-               mutate(umapcolor=ifelse(key_df[['nice_name_reassigned']] == 'Leiomyosarcoma', 'Leiomyosarcoma', 'Other'))) +
+               mutate(umapcolor=ifelse(key_df[['cdc_nice_name']] == 'Leiomyosarcoma', 'Leiomyosarcoma', 'Other'))) +
   geom_point(aes(x=V1, y=V2, color=umapcolor, size=umapcolor)) +
-  ggtitle('Leiomyosarcoma') +
-  xlab(paste0('UMAP1')) + ylab(paste0('UMAP2')) +
-  labs(color=NULL) +
+  labs(title='Leiomyosarcoma', color=NULL) +
   scale_color_manual(values=c(Leiomyosarcoma='red', Other='gray50')) +
   scale_size_manual(values=c(Leiomyosarcoma=0.7, Other=0.1)) +
   guides(color=guide_legend(override.aes=list(size=2)), size='none') +
@@ -178,11 +176,9 @@ up2 = ggplot(umap_df %>%
   theme_void()
 
 up3 = ggplot(umap_df %>%
-               mutate(umapcolor=ifelse(key_df[['nice_name_reassigned']] == 'Gastrointestinal Stromal Tumor', 'Gastrointestinal Stromal Tumor', 'Other'))) +
+               mutate(umapcolor=ifelse(key_df[['cdc_nice_name']] == 'Gastrointestinal Stromal Tumor', 'Gastrointestinal Stromal Tumor', 'Other'))) +
   geom_point(aes(x=V1, y=V2, color=umapcolor, size=umapcolor)) +
-  ggtitle('Gastrointestinal Stromal Tumor') +
-  xlab(paste0('UMAP1')) + ylab(paste0('UMAP2')) +
-  labs(color=NULL) +
+  labs(title='Gastrointestinal Stromal Tumor', color=NULL) +
   scale_color_manual(values=c(`Gastrointestinal Stromal Tumor` = 'red', Other='gray50')) +
   scale_size_manual(values=c(`Gastrointestinal Stromal Tumor`=0.7, Other=0.1)) +
   guides(color=guide_legend(override.aes=list(size=2)), size='none') +
@@ -190,11 +186,9 @@ up3 = ggplot(umap_df %>%
   theme_void()
 
 up4 = ggplot(umap_df %>%
-               mutate(umapcolor=ifelse(key_df[['nice_name_reassigned']] == "Myxoid Liposarcoma" , "Myxoid Liposarcoma", 'Other'))) +
+               mutate(umapcolor=ifelse(key_df[['cdc_nice_name']] == "Myxoid Liposarcoma" , "Myxoid Liposarcoma", 'Other'))) +
   geom_point(aes(x=V1, y=V2, color=umapcolor, size=umapcolor)) +
-  ggtitle("Myxoid Liposarcoma") +
-  xlab(paste0('UMAP1')) + ylab(paste0('UMAP2')) +
-  labs(color=NULL) +
+  labs(title='Myxoid Liposarcoma', color=NULL) +
   scale_color_manual(values=c(`Myxoid Liposarcoma`='red', Other='gray50')) +
   scale_size_manual(values=c(`Myxoid Liposarcoma`=0.7, Other=0.1)) +
   guides(color=guide_legend(override.aes=list(size=2)), size='none') +
@@ -202,13 +196,11 @@ up4 = ggplot(umap_df %>%
   theme_void()
 
 up5 = ggplot(umap_df %>%
-               mutate(umapcolor=ifelse(key_df[['nice_name_reassigned']] %in% c("Dedifferentiated Liposarcoma" , 
-                                                                               'Liposarcoma', 
-                                                                               'Liposarcoma (Well Differentiated)'), "Liposarcoma", 'Other'))) +
+               mutate(umapcolor=ifelse(key_df[['cdc_nice_name']] %in% c("Dedifferentiated Liposarcoma" , 
+                                                                        "Liposarcoma, NOS", 
+                                                                        "Well Differentiated Liposarcoma"), "Liposarcoma", 'Other'))) +
   geom_point(aes(x=V1, y=V2, color=umapcolor, size=umapcolor)) +
-  ggtitle("Liposarcoma/Dedifferentiated Liposarcoma") +
-  xlab(paste0('UMAP1')) + ylab(paste0('UMAP2')) +
-  labs(color=NULL) +
+  labs(title="Liposarcoma + WDL + DDL", color=NULL) +
   scale_color_manual(values=c(Liposarcoma='red', Other='gray50')) +
   scale_size_manual(values=c(Liposarcoma=0.7, Other=0.1)) +
   guides(color=guide_legend(override.aes=list(size=2)), size='none') +
@@ -262,11 +254,11 @@ counts_hm_mtx = t(scale(t(counts_hm_mtx)))
 # Order samples according to histology
 # Group liposarcomas sensu lato
 annots_df_ordered = key_df %>%
-  select(c('rna_seq_mod', 'immunegroup', 'nice_name_reassigned', 'primary_met', 'log_total_perMB')) %>%
-  mutate(nice_name_reassigned_lipogrp=ifelse(key_df[['nice_name_reassigned']] %in% c("Dedifferentiated Liposarcoma" , 
-                                                                                     'Liposarcoma', 
-                                                                                     'Liposarcoma (Well Differentiated)'), "Liposarcoma", nice_name_reassigned)) %>%
-  arrange(nice_name_reassigned_lipogrp, nice_name_reassigned) %>%
+  select(c('rna_seq_mod', 'immunegroup', 'cdc_nice_name', 'primary_met', 'log_total_perMB')) %>%
+  mutate(nice_name_reassigned_lipogrp=ifelse(key_df[['cdc_nice_name']] %in% c("Dedifferentiated Liposarcoma" , 
+                                                                              'Liposarcoma, NOS', 
+                                                                              "Well Differentiated Liposarcoma"), "Liposarcoma", cdc_nice_name)) %>%
+  arrange(nice_name_reassigned_lipogrp, cdc_nice_name) %>%
   column_to_rownames('rna_seq_mod')
 
 # Sort expression according to histologies
@@ -274,8 +266,8 @@ counts_hm_mtx = counts_hm_mtx[, match(rownames(annots_df_ordered), colnames(coun
 
 # Create heatmap annotation object
 hm_ann = HeatmapAnnotation(df=annots_df_ordered[match(colnames(counts_hm_mtx), rownames(annots_df_ordered)), ] %>%
-                             select(c('nice_name_reassigned', 'primary_met')),
-                           col=list(nice_name_reassigned=col_pal_hist,
+                             select(c('cdc_nice_name', 'primary_met')),
+                           col=list(cdc_nice_name=col_pal_hist,
                                     primary_met=col_pal_met))
 
 # Make color scale to accentuate the differences
@@ -286,7 +278,7 @@ gexpr_hm = Heatmap(counts_hm_mtx,
              cluster_columns=F, cluster_rows=F, 
              show_row_names=T, show_column_names=F, 
              show_row_dend=F,
-             column_title='Differentially expressed genes\nLeiomyosarcoma, GIST, Myxoid liposarcoma,\nLiposarcoma/Dedifferentiated Liposarcoma',
+             column_title='Differentially expressed genes\nLeiomyosarcoma, GIST, Myxoid liposarcoma,\nLiposarcoma/WDL/DDL',
              row_title='Log-normalized\ngene expression',
              heatmap_legend_param=list(title="Scaled\ngene expr"),
              show_column_dend=F,
@@ -306,7 +298,7 @@ rm(counts_hm_mtx, gexpr_hm, hm_col) # Clean env
 ```{r include=F}
 # Read MCPcounter scores
 mcp_res = read_delim('../results/immune_groups_deconvolution/mcpcounter_immune_scores.csv', show_col_types=F)
-mcp_res = mcp_res %>% column_to_rownames('cell_type')
+mcp_res = mcp_res %>% column_to_rownames('cell_type') %>% select(key_df[['rna_seq_mod']]) 
 
 # Scale matrix to use in hclust, NMF, and heatmaps
 mcp_scale = t(scale(t(mcp_res)))
@@ -316,7 +308,7 @@ mcp_scale = t(scale(t(mcp_res)))
 # Generate heatmap with immune deconvolution scores
 # Order samples according to immunegroup and histology
 annots_df_ordered = annots_df_ordered %>%
-  arrange(immunegroup, nice_name_reassigned)
+  arrange(immunegroup, cdc_nice_name)
 
 # Create log(TMB) barplot annotation for heatmap
 hm_ann_bar = HeatmapAnnotation(log_mut_per_mb=anno_barplot(annots_df_ordered[, 'log_total_perMB', drop=F]))
@@ -369,7 +361,7 @@ counts_hm_mtx = t(scale(t(counts_hm_mtx)))
 hm_ann = HeatmapAnnotation(df=annots_df_ordered %>%
                              select(-c('nice_name_reassigned_lipogrp', 'log_total_perMB')),
                            col=list(immunegroup=col_pal_dtc,
-                                    nice_name_reassigned=col_pal_hist,
+                                    cdc_nice_name=col_pal_hist,
                                     primary_met=col_pal_met))
 
 # Make color scale to accentuate the differences
@@ -409,33 +401,33 @@ dev.off()
 # Barplot of immunegroup proportions by histology
 ## ALL SAMPLES
 all_samples_tmp = key_df %>%
-  group_by(nice_name_reassigned) %>%
+  group_by(cdc_nice_name) %>%
   summarize(histology_samples=n(), .groups='drop') %>%
   left_join(., key_df %>%
-              group_by(nice_name_reassigned, immunegroup) %>%
+              group_by(cdc_nice_name, immunegroup) %>%
               summarize(histology_immune_samples=n(), .groups='drop') %>%
-              ungroup(), by='nice_name_reassigned', multiple='all') %>%
+              ungroup(), by='cdc_nice_name', multiple='all') %>%
   mutate(hist_immune_prop=histology_immune_samples/histology_samples) %>%
-  mutate(labels_n=paste0(nice_name_reassigned, ' (', histology_samples, ')'))
+  mutate(labels_n=paste0(cdc_nice_name, ' (', histology_samples, ')'))
 
 # Calculate proportion of immunegroup E to sort bars
-for(i in unique(all_samples_tmp[['nice_name_reassigned']])){
-  prop_tmp = as.vector(unlist(all_samples_tmp[['hist_immune_prop']][all_samples_tmp[['nice_name_reassigned']] == i & all_samples_tmp[['immunegroup']] == 'E']))
+for(i in unique(all_samples_tmp[['cdc_nice_name']])){
+  prop_tmp = as.vector(unlist(all_samples_tmp[['hist_immune_prop']][all_samples_tmp[['cdc_nice_name']] == i & all_samples_tmp[['immunegroup']] == 'E']))
   if(length(prop_tmp) > 0){
-    all_samples_tmp[['prop_group_e']][all_samples_tmp[['nice_name_reassigned']] == i] = prop_tmp
+    all_samples_tmp[['prop_group_e']][all_samples_tmp[['cdc_nice_name']] == i] = prop_tmp
   } else{
-    all_samples_tmp[['prop_group_e']][all_samples_tmp[['nice_name_reassigned']] == i] = 0
+    all_samples_tmp[['prop_group_e']][all_samples_tmp[['cdc_nice_name']] == i] = 0
   }
   rm(prop_tmp) # Clean env
 }
 
 # Ger total number of samples
-total_samples = all_samples_tmp %>% select(c('nice_name_reassigned', 'histology_samples')) %>% 
+total_samples = all_samples_tmp %>% select(c('cdc_nice_name', 'histology_samples')) %>% 
   unique() %>% select('histology_samples') %>% unlist() %>% sum()
 
 # Create rows with proportions of immunegroup E for all histologies
 all_samples_tmp = bind_rows(all_samples_tmp,
-                            tibble(nice_name_reassigned='All histologies',
+                            tibble(cdc_nice_name='All histologies',
                                    histology_samples=total_samples,
                                    prop_group_e=1,
                                    labels_n=paste0('All histologies (', total_samples, ')')) %>%
@@ -443,18 +435,18 @@ all_samples_tmp = bind_rows(all_samples_tmp,
                               mutate(hist_immune_prop=histology_immune_samples/histology_samples))
 
 # Get order of labels in first plot to transfer to other plots
-label_order = all_samples_tmp %>% select(c('nice_name_reassigned', 'prop_group_e')) %>% 
+label_order = all_samples_tmp %>% select(c('cdc_nice_name', 'prop_group_e')) %>% 
   arrange(desc(prop_group_e)) %>% unique() %>% mutate(label_order=1:nrow(.)) %>% select(-c('prop_group_e'))
 
 # Conduct proportion tests
 result_ptest = tibble()
-for(i in unique(all_samples_tmp[['nice_name_reassigned']])){
+for(i in unique(all_samples_tmp[['cdc_nice_name']])){
   # Create contingency table
   if(i == "All histologies"){
     df_tmp = key_df %>% 
       select(c('immunegroup', 'primary_met')) %>% table() %>% as.data.frame.matrix()    
   } else{
-    df_tmp = key_df %>% filter(nice_name_reassigned == i) %>% 
+    df_tmp = key_df %>% filter(cdc_nice_name == i) %>% 
       select(c('immunegroup', 'primary_met')) %>% table() %>% as.data.frame.matrix()
   }
   
@@ -465,24 +457,24 @@ for(i in unique(all_samples_tmp[['nice_name_reassigned']])){
     ftest = list(p.value=NA)
   }
   
-  result_ptest = bind_rows(result_ptest, tibble(nice_name_reassigned=i, p_val=ftest[['p.value']]))
+  result_ptest = bind_rows(result_ptest, tibble(cdc_nice_name=i, p_val=ftest[['p.value']]))
   if(!is.na(ftest[['p.value']])){
     if(ftest[['p.value']] < 0.05){
-      new_label = paste0(all_samples_tmp[['labels_n']][all_samples_tmp[['nice_name_reassigned']] == i], ' *')
+      new_label = paste0(all_samples_tmp[['labels_n']][all_samples_tmp[['cdc_nice_name']] == i], ' *')
     } else if(ftest[['p.value']] >= 0.05){
-      new_label = paste0(all_samples_tmp[['labels_n']][all_samples_tmp[['nice_name_reassigned']] == i], '')
+      new_label = paste0(all_samples_tmp[['labels_n']][all_samples_tmp[['cdc_nice_name']] == i], '')
     }
   }else{
-    new_label = paste0(all_samples_tmp[['labels_n']][all_samples_tmp[['nice_name_reassigned']] == i], ' x')
+    new_label = paste0(all_samples_tmp[['labels_n']][all_samples_tmp[['cdc_nice_name']] == i], ' x')
   }
-  all_samples_tmp[['labels_n']][all_samples_tmp[['nice_name_reassigned']] == i] = new_label
+  all_samples_tmp[['labels_n']][all_samples_tmp[['cdc_nice_name']] == i] = new_label
   
   rm(df_tmp, new_label, ftest) # Clean env
 }
 
 # MAKE PLOTS
 bp_all = ggplot(all_samples_tmp %>%
-                  left_join(., label_order, by='nice_name_reassigned'), aes(y=reorder(labels_n, desc(label_order)), x=hist_immune_prop)) +
+                  left_join(., label_order, by='cdc_nice_name'), aes(y=reorder(labels_n, desc(label_order)), x=hist_immune_prop)) +
   geom_bar(aes(fill=immunegroup), stat='identity') +
   ylab('Histology') + xlab('Proportion of samples') +
   ggtitle('Proportion of immunegroups by histology\nAll samples') +
@@ -592,6 +584,48 @@ rm(rm_samples) # Clean env
 ```
 
 ```{r include=F}
+# Tabulate censorship events by histology
+df_tmp = as.data.frame.matrix(as.matrix(table(prox_os_5yr_df[['sarcoma_collapsed']], prox_os_5yr_df[['right_anchor_event']])))
+df_tmp = df_tmp %>% 
+  janitor::clean_names() %>%
+  mutate(total=rowSums(.)) %>% 
+  rownames_to_column('sarcoma_collapsed') %>%
+  arrange(desc(total)) %>%
+  mutate(percent_alive=round(alive/total, 2)) %>%
+  mutate(percent_dead=round(dead/total, 2)) %>%
+  mutate(percent_lost=round(lost_to_follow_up/total, 2))
+
+df_tmp2 = prox_os_5yr_df %>%
+  mutate(avg_dx2rightanchor=right_anchor - age_at_diagnosis_p) %>%
+  select(c('sarcoma_collapsed', 'avg_dx2rightanchor')) %>%
+  group_by(sarcoma_collapsed) %>%
+  summarize(avg_dx2rightanchor=median(avg_dx2rightanchor)) %>%
+  ungroup() %>%
+  left_join(df_tmp, ., by='sarcoma_collapsed')
+```
+
+```{r include=F}
+# Tabulate censorship events by immunegroup
+df_tmp = as.data.frame.matrix(as.matrix(table(prox_os_5yr_df[['immunegroup']], prox_os_5yr_df[['right_anchor_event']])))
+df_tmp = df_tmp %>% 
+  janitor::clean_names() %>%
+  mutate(total=rowSums(.)) %>% 
+  rownames_to_column('immunegroup') %>%
+  arrange(desc(total)) %>%
+  mutate(percent_alive=round(alive/total, 2)) %>%
+  mutate(percent_dead=round(dead/total, 2)) %>%
+  mutate(percent_lost=round(lost_to_follow_up/total, 2))
+
+df_tmp2 = prox_os_5yr_df %>%
+  mutate(avg_dx2rightanchor=right_anchor - age_at_diagnosis_p) %>%
+  select(c('immunegroup', 'avg_dx2rightanchor')) %>%
+  group_by(immunegroup) %>%
+  summarize(avg_dx2rightanchor=median(avg_dx2rightanchor)) %>%
+  ungroup() %>%
+  left_join(df_tmp, ., by='immunegroup')
+```
+
+```{r include=F}
 # Create Surv object
 surv_obj = Surv(time=prox_os_5yr_df[['ov_surv']], event=prox_os_5yr_df[['dead']])  
 # Fit model (also convert to data frame because survminer does not like tibbles)
@@ -665,16 +699,14 @@ uncorr_umap_df = uncorr_umap_res[['layout']] %>%
   rownames_to_column(var='sample') %>%
   left_join(., key_df %>%
               select(sample=rna_seq_mod, immunegroup, specimen_type_collapsed, 
-                     site_recode, nice_name_reassigned), by='sample')
+                     site_recode, cdc_nice_name), by='sample')
 ```
 
 ```{r include=F}
 # Generate plots
 ucup1 = ggplot(uncorr_umap_df) +
   geom_point(aes(x=V1, y=V2, color=specimen_type_collapsed), size=2, alpha=0.7) +
-  ggtitle('UMAP (uncorrected counts)\nPreservation method') +
-  xlab(paste0('UMAP1')) + ylab(paste0('UMAP2')) +
-  labs(color=NULL) +
+  labs(itle='UMAP (uncorrected counts)\nPreservation method', color=NULL) +
   scale_color_manual(values=c(FFPE="#7E1900", Unspecified="gold", Frozen="#1A3399")) +
   guides(color=guide_legend(override.aes=list(size=2, alpha=1), ncol=1)) +
   coord_fixed(1) +
@@ -682,9 +714,7 @@ ucup1 = ggplot(uncorr_umap_df) +
 
 ucup2 = ggplot(uncorr_umap_df) +
   geom_point(aes(x=V1, y=V2, color=site_recode), size=2, alpha=0.7) +
-  ggtitle('UMAP (uncorrected counts)\nInstitution') +
-  xlab(paste0('UMAP1')) + ylab(paste0('UMAP2')) +
-  labs(color=NULL) +
+  labs(title='UMAP (uncorrected counts)\nInstitution', color=NULL) +
   guides(color=guide_legend(override.aes=list(size=2, alpha=1), ncol=1)) +
   khroma::scale_color_romaO(discrete=T) +
   coord_fixed(1) +
@@ -692,9 +722,7 @@ ucup2 = ggplot(uncorr_umap_df) +
 
 up3 = ggplot(umap_df) +
   geom_point(aes(x=V1, y=V2, color=specimen_type_collapsed), size=2, alpha=0.7) +
-  ggtitle('UMAP (corrected counts)\nPreservation method') +
-  xlab(paste0('UMAP1')) + ylab(paste0('UMAP2')) +
-  labs(color=NULL) +
+  labs(title='UMAP (corrected counts)\nPreservation method', color=NULL) +
   scale_color_manual(values=c(FFPE="#7E1900", Unspecified="gold", Frozen="#1A3399")) +
   guides(color=guide_legend(override.aes=list(size=2, alpha=1), ncol=1)) +
   coord_fixed(1) +
@@ -702,9 +730,7 @@ up3 = ggplot(umap_df) +
 
 up4 = ggplot(umap_df) +
   geom_point(aes(x=V1, y=V2, color=site_recode), size=2, alpha=0.7) +
-  ggtitle('UMAP (corrected counts)\nInstitution') +
-  xlab(paste0('UMAP1')) + ylab(paste0('UMAP2')) +
-  labs(color=NULL) +
+  labs(title='UMAP (corrected counts)\nInstitution', color=NULL) +
   guides(color=guide_legend(override.aes=list(size=2, alpha=1), ncol=1)) +
   khroma::scale_color_romaO(discrete=T) +
   coord_fixed(1) +
@@ -755,9 +781,7 @@ rm(genexpr, genes_keep_de_hist, umap_expr_df, up5) # Clean environment
 # Create UMAP plots colored by immune group assignment
 up1 = ggplot(umap_df) +
   geom_point(aes(x=V1, y=V2, color=immunegroup), size=0.7, alpha=0.9) +
-  ggtitle('Immunegroup') +
-  xlab(paste0('UMAP1')) + ylab(paste0('UMAP2')) +
-  labs(color=NULL) +
+  labs(title='Immunegroup', color=NULL) +
   guides(color=guide_legend(override.aes=list(size=2, alpha=1))) +
   coord_fixed(1) +
   theme_void()
@@ -885,7 +909,7 @@ for(i in unique(prox_os_5yr_df[['orien_avatar_key']])){
   }
   rm(multi_sample) # Clean env
 }
-cat(paste0("Proximal anchors 5YR - Before grade subset: ", length(unique(prox_os_5yr_df$orien_avatar_key))))
+cat(paste0("Proximal anchors 5YR - Before grade subset: ", length(unique(prox_os_5yr_df[['orien_avatar_key']]))))
 # Remove samples identified as lower grade
 prox_os_5yr_df = prox_os_5yr_df %>%
   filter(!(rna_seq_mod %in% rm_samples)) %>%
@@ -989,3 +1013,72 @@ print(ggpubr::ggarrange(p1, p2, ncol=2, common.legend=T, legend='bottom'))
 rm(surv_obj, coxphaz, coxphaz_summ, test_title, prox_os_5yr_df) # Clean env
 ```
 
+### SuppFigureXX_SURVIVALNOGIST
+```{r include=F}
+### SUBSET TO 5 YR AND EXCLUDING ALL GISTs
+prox_os_5yr_df = prox_os_df %>%
+  filter(sarcoma_collapsed != 'gastrointestinal_stromal_tumor') %>%
+  filter(abs(as.numeric(.[['dx2sc_p']])) < 5) %>% # Subset to samples with difference between diagnosis and collection time > 1yr
+  group_by(orien_avatar_key) %>%
+  slice_min(dx2sc_p, n=1) # Take the record with lowest difference between diagnosis and collection time
+
+# Identify samples with lower grades per AVATAR
+rm_samples = c() # Vector with samples to be removed
+for(i in unique(prox_os_5yr_df[['orien_avatar_key']])){
+  # RNAseq sample IDs from same AVATAR
+  multi_sample = prox_os_5yr_df[['rna_seq_mod']][prox_os_5yr_df[['orien_avatar_key']] == i]
+  if(length(multi_sample) > 1){
+    df_tmp = prox_os_5yr_df[prox_os_5yr_df[['rna_seq_mod']] %in% multi_sample, ]
+    # Check that AVATAR has only one censorship status (expected)
+    if(length(unique(df_tmp[['censorship']])) != 1){
+      stop(paste0("Something is off with AVATAR" , i, ". Has more than one censorship status."))
+    }
+    # Identify samples with lower grades and store to vector
+    rm_samples = c(rm_samples, df_tmp[['rna_seq_mod']][-which.max(df_tmp[['stage_clean_recode']])])
+    rm(df_tmp) # Clean env
+  }
+  rm(multi_sample) # Clean env
+}
+cat(paste0("Proximal anchors 5YR - Before grade subset: ", length(unique(prox_os_5yr_df[['orien_avatar_key']]))))
+# Remove samples identified as lower grade
+prox_os_5yr_df = prox_os_5yr_df %>%
+  filter(!(rna_seq_mod %in% rm_samples)) %>%
+  mutate(stage_clean=recode(stage_clean_recode, 
+                            '0'='0', '1'='I', '2'='II', 
+                            '3'='III', '4'='IV', '-1'='unknown')) # Recode stage again as roman numerals
+rm(rm_samples) # Clean env
+```
+
+```{r include=F}
+# Create Surv object
+surv_obj = Surv(time=prox_os_5yr_df[['ov_surv']], event=prox_os_5yr_df[['dead']])  
+# Fit model (also convert to data frame because survminer does not like tibbles)
+coxphaz = coxph(surv_obj ~ immunegroup + stage_clean + sarcoma_collapsed, 
+                data=as.data.frame(prox_os_5yr_df), control=coxph.control(iter.max=50))
+coxphaz_summ = summary(coxphaz)
+
+# Construct title for plot
+test_title = paste0("Survival ~ ImmuneGroup + Stage + Histology (except GIST)\n",
+                    "Walds=", round(coxphaz_summ$waldtest[1], 2), 
+                    '; p=', round(coxphaz_summ$waldtest[3], 3),
+                    '\nLRT=', round(coxphaz_summ$logtest[1], 2),
+                    '; p=', round(coxphaz_summ$logtest[3], 3),
+                    '\nn=', length(surv_obj)) # Show actual p-value instead of alpha
+
+# Create plots for each immune group
+p1 = ggadjustedcurves(coxphaz, data=as.data.frame(prox_os_5yr_df), variable='immunegroup', size=0.75) +
+  ggtitle(test_title) + 
+  labs(col="Immunegroup") + 
+  xlab('Time (Years)') +
+  theme(panel.border=element_rect(fill=NA, color='black'),
+        plot.title=element_text(size=10))
+
+rm(surv_obj, coxphaz, coxphaz_summ, test_title, prox_os_5yr_df) # Clean env
+
+# Save plots
+pdf('../docs/figures_manuscript/SuppFigureXX_SURVIVALNOGIST.pdf', width=9, height=5)
+print(ggpubr::ggarrange(p1, common.legend=T, legend='bottom'))
+dev.off()
+
+rm(surv_obj, coxphaz, coxphaz_summ, test_title, prox_os_5yr_df) # Clean env
+```
