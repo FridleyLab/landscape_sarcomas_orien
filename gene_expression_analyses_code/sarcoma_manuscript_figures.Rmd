@@ -776,6 +776,53 @@ print(up5)
 rm(genexpr, genes_keep_de_hist, umap_expr_df, up5) # Clean environment
 ```
 
+### SuppFigureXX_UMAPHISTOLOGIES
+```{r include=F}
+up_h1 = ggplot(umap_df %>%
+               mutate(umapcolor=ifelse(key_df[['cdc_nice_name']] %in% c("Ewing Sarcoma"), "Ewing Sarcoma", 'Other'))) +
+  geom_point(aes(x=V1, y=V2, color=umapcolor, size=umapcolor)) +
+  labs(title="Ewing Sarcoma", color=NULL) +
+  scale_color_manual(values=c(`Ewing Sarcoma`='red', Other='gray50')) +
+  scale_size_manual(values=c(`Ewing Sarcoma`=0.7, Other=0.1)) +
+  guides(color=guide_legend(override.aes=list(size=2)), size='none') +
+  coord_fixed(1) +
+  theme_void()
+
+up_h2 = ggplot(umap_df %>%
+               mutate(umapcolor=ifelse(key_df[['cdc_nice_name']] %in% c("Synovial Sarcoma"), "Synovial Sarcoma", 'Other'))) +
+  geom_point(aes(x=V1, y=V2, color=umapcolor, size=umapcolor)) +
+  labs(title="Synovial Sarcoma", color=NULL) +
+  scale_color_manual(values=c(`Synovial Sarcoma`='red', Other='gray50')) +
+  scale_size_manual(values=c(`Synovial Sarcoma`=0.7, Other=0.1)) +
+  guides(color=guide_legend(override.aes=list(size=2)), size='none') +
+  coord_fixed(1) +
+  theme_void()
+
+up_h3 = ggplot(umap_df %>%
+               mutate(umapcolor=ifelse(key_df[['cdc_nice_name']] %in% c("Desmoplastic Small Round Cell Tumor"), 
+                                       "Desmoplastic Small Round Cell Tumor", 'Other'))) +
+  geom_point(aes(x=V1, y=V2, color=umapcolor, size=umapcolor)) +
+  labs(title="Desmoplastic Small\nRound Cell Tumor", color=NULL) +
+  scale_color_manual(values=c(`Desmoplastic Small Round Cell Tumor`='red', Other='gray50')) +
+  scale_size_manual(values=c(`Desmoplastic Small Round Cell Tumor`=0.7, Other=0.1)) +
+  guides(color=guide_legend(override.aes=list(size=2)), size='none') +
+  coord_fixed(1) +
+  theme_void()
+
+up_h4 = ggplot(umap_df %>%
+               mutate(umapcolor=ifelse(key_df[['cdc_nice_name']] %in% c("Solitary Fibrous Tumor Malignant"), 
+                                       "Solitary Fibrous Tumor Malignant", 'Other'))) +
+  geom_point(aes(x=V1, y=V2, color=umapcolor, size=umapcolor)) +
+  labs(title="Solitary Fibrous Tumor Malignant", color=NULL) +
+  scale_color_manual(values=c(`Solitary Fibrous Tumor Malignant`='red', Other='gray50')) +
+  scale_size_manual(values=c(`Solitary Fibrous Tumor Malignant`=0.7, Other=0.1)) +
+  guides(color=guide_legend(override.aes=list(size=2)), size='none') +
+  coord_fixed(1) +
+  theme_void()
+  
+rm(up_h1, up_h2, up_h3, up_h4) # Clean env
+```
+
 ### SuppFigureXX_HISTOLOGYIMMUNEGROUP
 ```{r include=F}
 # Create UMAP plots colored by immune group assignment
