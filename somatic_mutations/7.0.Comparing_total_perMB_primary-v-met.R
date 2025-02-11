@@ -1,32 +1,33 @@
-
-# libraries ---------------------------------------------------------------
 rm(list=ls())
+gc(full=TRUE)
+# libraries ---------------------------------------------------------------
 library(tidyverse)
 library(openxlsx)
 
 # data --------------------------------------------------------------------
 
-clinical = read.xlsx("Analysis_folders/1.0.Histology_Reassignment/ClinicalLinkagewithFiles_20230731_niceNames.xlsx")
+clinical = read.xlsx("Analysis_folders/1.0.Histology_Reassignment/ClinicalLinkagewithFiles_20240716_niceNames.xlsx")
 clin2 = clinical %>%
   filter(!is.na(somatic_file),
          tumor_germline == "Tumor",
-         is.na(sarcoma)) %>%
+         is.na(sarcoma),
+         !reviewer_remove) %>%
   mutate(Tumor_Sample_Barcode = gsub("\\..*", "", somatic_file)) %>%
-  group_by(changed_diagnosis_clean) %>%
-  mutate(changed_diagnosis_collapsed = ifelse(n() < 5, "other", changed_diagnosis_clean),
-         nice_name_reassigned_collapsed = ifelse(n() < 5, "other", nice_name_reassigned)) %>%
+  group_by(cdc_revision) %>%
+  mutate(changed_diagnosis_collapsed = ifelse(n() < 5, "other", cdc_revision),
+         nice_name_reassigned_collapsed = ifelse(n() < 5, "other", cdc_nice_name)) %>%
   ungroup()
 all_studies_total_perMB = lapply(list.files("Analysis_folders/FilteringVCFfiles/MutationPerMB10", full.names = T, pattern = "csv$"), 
                                  read.csv, check.names = F) %>%
   do.call(bind_rows, .) %>% distinct() #since all will have the TCGA, remove duplicates
 #get the updated histology subtype assignments
 sum(all_studies_total_perMB$Tumor_Sample_Barcode %in% clin2$Tumor_Sample_Barcode)
-#result is 1168 because there are 2 samples with none
+#result is 1160 because there are 2 samples with none
 
 #merging the clinical (all samples) and the tumor mutation burden
 all_studies_total_perMB = clin2 %>%
   rename("cohort" = 2) %>%
-  full_join(all_studies_total_perMB %>%
+  left_join(all_studies_total_perMB %>%
               filter(!grepl("TCGA", Tumor_Sample_Barcode)) %>%
               select(-cohort)) %>%
   relocate(cohort, .after = total)
@@ -99,6 +100,43 @@ chisq.test(t(tmp))$expected
 #looks like the composition of TMB load is not independent of tumor site
 
 wilcox.test(total_perMB ~ primary_met, data = analysis_data)
+
+#identify high vs low based on TCGA classification per histology per tumor site
+interest_hists = all_studies_total_perMB %>%
+  mutate(total_perMB = ifelse(is.na(total_perMB), 0.000001, total_perMB)) %>%
+  select(nice_name_reassigned_collapsed, primary_met, total_perMB) %>%
+  group_by(nice_name_reassigned_collapsed, primary_met) %>%
+  summarise(n = n()) %>%
+  filter(n >= 20) %>%
+  filter(length(unique(primary_met)) == 2) %>%
+  pull(nice_name_reassigned_collapsed) %>% 
+  unique()
+
+all_studies_total_perMB %>%
+  mutate(total_perMB = ifelse(is.na(total_perMB), 0.000001, total_perMB)) %>%
+  select(nice_name_reassigned_collapsed, primary_met, total_perMB) %>%
+  filter(nice_name_reassigned_collapsed %in% interest_hists) %>%
+  arrange(nice_name_reassigned_collapsed, primary_met) %>%
+  group_by(nice_name_reassigned_collapsed) %>%
+  group_map(~ {
+    tmp = wilcox.test(total_perMB ~ primary_met, data = .x)
+    data.frame('nice_name_reassigned_collapsed' = unique(.y$nice_name_reassigned_collapsed),
+               'statistic' = tmp$statistic,
+               'p-value' = tmp$p.value)
+  }) %>%
+  do.call(bind_rows, .)
+
+all_studies_total_perMB %>%
+  mutate(total_perMB = ifelse(is.na(total_perMB), 0.000001, total_perMB)) %>%
+  select(nice_name_reassigned_collapsed, primary_met, total_perMB) %>%
+  filter(nice_name_reassigned_collapsed %in% interest_hists) %>%
+  arrange(nice_name_reassigned_collapsed, primary_met) %>%
+  ggplot() + 
+  geom_violin(aes(x = nice_name_reassigned_collapsed, color = primary_met, y = total_perMB))
+
+
+
+
 
 
 

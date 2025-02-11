@@ -1,6 +1,6 @@
 #Alex Soupir
 #making cnTable for use with mafTools copy number that isn't GISTIC
-
+rm(list=ls())
 library(tidyverse) #piping and data processing
 library(pbmcapply) #progress bar multicore apply functions
 library(data.table) #fast reading of data frames
@@ -15,14 +15,15 @@ library(openxlsx) #reading excel files into R
 # maf = readRDS("Analysis_folders/Oncoplot/somatic_AF4_FR11_10/1170_somatic_maf.rds")
 
 #clinical file created with Dale
-clinical = read.xlsx("Analysis_folders/1.0.Histology_Reassignment/ClinicalLinkagewithFiles_20230731_niceNames.xlsx")
+clinical = read.xlsx("Analysis_folders/1.0.Histology_Reassignment/ClinicalLinkagewithFiles_20240716_niceNames.xlsx")
 clin2 = clinical %>% 
   filter(!is.na(somatic_file), #get only samples that we have mutations for
          tumor_germline == "Tumor", #remove the germline samples
-         is.na(sarcoma)) %>% #make sure only to keep those that don't have a flag for not being sarcoma
+         is.na(sarcoma),
+         !reviewer_remove) %>% #make sure only to keep those that don't have a flag for not being sarcoma
   mutate(Tumor_Sample_Barcode = gsub("\\..*", "", somatic_file)) %>% #extract the sample ID from the file name
-  group_by(sarcoma_collapsed) %>% #group by sarcoma histology that Andrew Collapsed
-  mutate(new_collapsed = ifelse(n() < 5, "other", changed_diagnosis_clean)) %>% #if there are less than 5 samples, group them to Other
+  group_by(cdc_revision) %>% #group by sarcoma histology that Andrew Collapsed
+  mutate(new_collapsed = ifelse(n() < 5, "other", cdc_revision)) %>% #if there are less than 5 samples, group them to Other
   ungroup()
 
 

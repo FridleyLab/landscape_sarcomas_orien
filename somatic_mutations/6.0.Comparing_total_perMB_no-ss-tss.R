@@ -1,6 +1,9 @@
+rm(list=ls())
+gc(full=TRUE)
 #libraries
 library(tidyverse)
 library(data.table)
+library(openxlsx)
 library(maftools)
 library(parallel)
 #get the maf objects previously created for each histology subtype - not collapsed
@@ -11,15 +14,16 @@ NIM = 63.377915
 #list the files that are filtered and Annovar annotated
 kits = list.files("Analysis_folders/FilteringVCFfiles/somatic_vcfs_tumor_AF04_F1R21_F2R11_10reads_annotated//")
 #updated_clinical
-clinical = read.xlsx("Analysis_folders/1.0.Histology_Reassignment/ClinicalLinkagewithFiles_20230731_niceNames.xlsx")
+clinical = read.xlsx("Analysis_folders/1.0.Histology_Reassignment/ClinicalLinkagewithFiles_20240716_niceNames.xlsx")
 clin2 = clinical %>%
   filter(!is.na(somatic_file),
          tumor_germline == "Tumor",
-         is.na(sarcoma)) %>%
+         is.na(sarcoma),
+         !reviewer_remove) %>%
   mutate(Tumor_Sample_Barcode = gsub("\\..*", "", somatic_file)) %>%
-  group_by(changed_diagnosis_clean) %>%
-  mutate(changed_diagnosis_collapsed = ifelse(n() < 5, "other", changed_diagnosis_clean),
-         nice_name_reassigned_collapsed = ifelse(n() < 5, "other", nice_name_reassigned)) %>%
+  group_by(cdc_revision) %>%
+  mutate(changed_diagnosis_collapsed = ifelse(n() < 5, "other", cdc_revision),
+         nice_name_reassigned_collapsed = ifelse(n() < 5, "other", cdc_nice_name)) %>%
   ungroup()
 #loop over the mafs and calculate the real mutations per MB using appropriate kit capture size
 res = lapply(mafs, function(maf){
@@ -48,7 +52,7 @@ res = lapply(mafs, function(maf){
   do.call(bind_rows, .)
 #merge with reassigned, collapsed, histology subtypes
 res2 = res %>%
-  full_join(clin2 %>%
+  right_join(clin2 %>%
               select(changed_diagnosis_clean:nice_name_reassigned_collapsed))
 #save the data
 write.csv(res2, "Analysis_folders/FilteringVCFfiles/TMB_no-ss-tss/TMB_expanded_no-ss-tss.csv")

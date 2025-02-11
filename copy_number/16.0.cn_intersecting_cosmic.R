@@ -1,5 +1,6 @@
 #Alex Soupir
 #create heatmap for the copy number data
+rm(list=ls())
 library(tidyverse) #data processing
 library(pbmcapply) #progress bar multicore apply
 library(data.table) #data processing (faster than tidyverse but syntax is confusion)
@@ -8,15 +9,16 @@ library(ComplexHeatmap) #making heatmap
 
 #import data
 #the *_niceNames.xlsx file is the same is the one previouly used, just with the sacoma collapsed changed to Title format (first letter capitalized) and underscores removed in column called "nice_name_collapsed"
-clinical = read.xlsx("Analysis_folders/1.0.Histology_Reassignment/ClinicalLinkagewithFiles_20230731_niceNames.xlsx")
+clinical = read.xlsx("Analysis_folders/1.0.Histology_Reassignment/ClinicalLinkagewithFiles_20240716_niceNames.xlsx")
 clin2 = clinical %>%
   filter(!is.na(somatic_file), #make sure that we have the somatic mutaiton file for the sample
          tumor_germline == "Tumor", #remove germline from clinical file
-         is.na(sarcoma)) %>% #remove 'non-sarcoma' samples
+         is.na(sarcoma),
+         !reviewer_remove) %>% #remove 'non-sarcoma' samples
   mutate(Tumor_Sample_Barcode = gsub("\\..*", "", somatic_file)) %>% #remove everything after "." to get sample ID
-  group_by(sarcoma_collapsed) %>% #group by the sarcoma histology Andrew collapsed
-  mutate(new_collapsed = ifelse(n() < 5, "other", changed_diagnosis_clean), #if there are less than 5 samples, make new collapsed "other"
-         nice_name_collapsed = ifelse(n() < 5, "Other", nice_name_reassigned)) %>% #with a nice name called "Other" for plotting
+  group_by(cdc_revision) %>% #group by the sarcoma histology Andrew collapsed
+  mutate(new_collapsed = ifelse(n() < 5, "other", cdc_revision), #if there are less than 5 samples, make new collapsed "other"
+         nice_name_collapsed = ifelse(n() < 5, "Other", cdc_nice_name)) %>% #with a nice name called "Other" for plotting
   ungroup()
 cosmic_genes = read.csv("Analysis_folders/Significantly_Mutated_Genes/Census_all_COSMIC.csv") #retrieve the COSMIC Tier 1 gene list
 

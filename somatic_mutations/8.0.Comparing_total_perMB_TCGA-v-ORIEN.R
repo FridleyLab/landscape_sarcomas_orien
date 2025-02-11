@@ -1,20 +1,22 @@
-# libraries ---------------------------------------------------------------
 rm(list=ls())
+gc(full=TRUE)
+# libraries ---------------------------------------------------------------
 library(tidyverse)
 library(openxlsx)
 
 
 # data --------------------------------------------------------------------
 
-clinical = read.xlsx("Analysis_folders/1.0.Histology_Reassignment/ClinicalLinkagewithFiles_20230731_niceNames.xlsx")
+clinical = read.xlsx("Analysis_folders/1.0.Histology_Reassignment/ClinicalLinkagewithFiles_20240716_niceNames.xlsx")
 clin2 = clinical %>%
   filter(!is.na(somatic_file),
          tumor_germline == "Tumor",
-         is.na(sarcoma)) %>%
+         is.na(sarcoma),
+         !reviewer_remove) %>%
   mutate(Tumor_Sample_Barcode = gsub("\\..*", "", somatic_file)) %>%
-  group_by(changed_diagnosis_clean) %>%
-  mutate(changed_diagnosis_collapsed = ifelse(n() < 5, "other", changed_diagnosis_clean),
-         nice_name_reassigned_collapsed = ifelse(n() < 5, "other", nice_name_reassigned)) %>%
+  group_by(cdc_revision) %>%
+  mutate(changed_diagnosis_collapsed = ifelse(n() < 5, "other", cdc_revision),
+         nice_name_reassigned_collapsed = ifelse(n() < 5, "other", cdc_nice_name)) %>%
   ungroup()
 all_studies_total_perMB = lapply(list.files("Analysis_folders/FilteringVCFfiles/MutationPerMB10", full.names = T, pattern = "csv$"), 
                                  read.csv, check.names = F) %>%
@@ -29,9 +31,10 @@ sarc_dat = clin2 %>%
   full_join(all_studies_total_perMB)  %>% 
   filter(!is.na(wes) | cohort == "SARC") %>%
   select(wes, Tumor_Sample_Barcode, total, cohort, total_perMB, Capture_Region)
+#2 have NA in the cohort because they don't have any mutations
 #number of avatar members
 sum(sarc_dat$Tumor_Sample_Barcode %in% clin2$Tumor_Sample_Barcode)
-#1170 - all samples
+#1162 - all samples
 
 #calculate burden
 sarc_summary = sarc_dat %>%
@@ -48,7 +51,7 @@ sarc_summary = sarc_dat %>%
 #print the table
 sarc_summary
 #low inter %
-(1134 + 14) / (1134 + 14 + 22)
+(1128 + 14) / (1128 + 14 + 20)
 (226 + 5) / (226 + 5 + 8)
 #do fishers exact
 fisher.test(sarc_summary)
@@ -78,5 +81,4 @@ sarc_dat %>%
             min = min(total_perMB),
             max = max(total_perMB)) %>%
   arrange(desc(median))
-
 

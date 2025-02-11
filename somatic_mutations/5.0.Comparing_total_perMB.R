@@ -1,6 +1,9 @@
+rm(list=ls())
+gc(full=TRUE)
 #libraries
 library(tidyverse)
 library(data.table)
+library(openxlsx)
 library(maftools)
 library(parallel)
 #get the maf objects previously created for each histology subtype - not collapsed
@@ -11,15 +14,16 @@ NIM = 63.377915
 #list the files that are filtered and Annovar annotated
 kits = list.files("Analysis_folders/FilteringVCFfiles/somatic_vcfs_tumor_AF04_F1R21_F2R11_10reads_annotated//")
 #updated_clinical
-clinical = read.xlsx("Analysis_folders/1.0.Histology_Reassignment/ClinicalLinkagewithFiles_20230731_niceNames.xlsx")
+clinical = read.xlsx("Analysis_folders/1.0.Histology_Reassignment/ClinicalLinkagewithFiles_20240716_niceNames.xlsx")
 clin2 = clinical %>%
   filter(!is.na(somatic_file),
          tumor_germline == "Tumor",
-         is.na(sarcoma)) %>%
+         is.na(sarcoma),
+         !reviewer_remove) %>%
   mutate(Tumor_Sample_Barcode = gsub("\\..*", "", somatic_file)) %>%
-  group_by(changed_diagnosis_clean) %>%
-  mutate(changed_diagnosis_collapsed = ifelse(n() < 5, "other", changed_diagnosis_clean),
-         nice_name_reassigned_collapsed = ifelse(n() < 5, "other", nice_name_reassigned)) %>%
+  group_by(cdc_revision) %>%
+  mutate(changed_diagnosis_collapsed = ifelse(n() < 5, "other", cdc_revision),
+         nice_name_reassigned_collapsed = ifelse(n() < 5, "other", cdc_nice_name)) %>%
   ungroup()
 #loop over the mafs and calculate the real mutations per MB using appropriate kit capture size
 tmp = lapply(mafs, function(maf){
@@ -51,14 +55,14 @@ all_studies_total_perMB = lapply(list.files("Analysis_folders/FilteringVCFfiles/
 
 #get the updated histology subtype assignments
 sum(all_studies_total_perMB$Tumor_Sample_Barcode %in% clin2$Tumor_Sample_Barcode)
-#result is 1168 because there are 2 samples with none
+#result is 1160 because there are 2 samples with none
 #all tcga samples have "TCGA" in the name which makes it easier
 all_studies_total_perMB = clin2 %>%
   filter(Tumor_Sample_Barcode %in% all_studies_total_perMB$Tumor_Sample_Barcode) %>% 
   select(Tumor_Sample_Barcode, nice_name_reassigned_collapsed) %>% 
   rename("cohort" = 2) %>%
   full_join(all_studies_total_perMB %>%
-              filter(!grepl("TCGA", Tumor_Sample_Barcode)) %>%
+              filter(!grepl("TCGA", Tumor_Sample_Barcode), Tumor_Sample_Barcode %in% clin2$Tumor_Sample_Barcode) %>%
               select(-cohort)) %>%
   full_join(all_studies_total_perMB %>%
               filter(grepl("TCGA", Tumor_Sample_Barcode))) %>%
@@ -76,6 +80,7 @@ raw_tmb = all_studies_total_perMB %>%
          total = ifelse(is.na(total), 0, total))
 mean(raw_tmb$total_perMB)
 raw_tmb %>% group_by(primary_met) %>% summarise(`Mean TMB` = mean(total_perMB))
+write.csv(raw_tmb, "Analysis_folders/TumorMutationBurden/Somatic_MutationsPerMB_10rFiltered.csv")
 wilcox.test(total_perMB ~ primary_met, data = raw_tmb)
 
 #i think these were part of the MAFtools `tcgaCompare` function but the test wasn't used for plotting i dont think

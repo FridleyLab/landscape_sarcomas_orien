@@ -5,16 +5,19 @@ library(openxlsx)
 library(pals)
 library(ComplexHeatmap)
 
+`%notin%` = negate(`%in%`)
+
 # External Files ----------------------------------------------------------
-clinical = read.xlsx("Analysis_folders/1.0.Histology_Reassignment/ClinicalLinkagewithFiles_20230731_niceNames.xlsx")
+clinical = read.xlsx("Analysis_folders/1.0.Histology_Reassignment/ClinicalLinkagewithFiles_20240716_niceNames.xlsx")
 clin2 = clinical %>%
   filter(!is.na(somatic_file),
          tumor_germline == "Tumor",
-         is.na(sarcoma)) %>%
+         is.na(sarcoma), 
+         !reviewer_remove) %>%
   mutate(Tumor_Sample_Barcode = gsub("\\..*", "", somatic_file)) %>%
-  group_by(changed_diagnosis_clean) %>%
-  mutate(changed_diagnosis_collapsed = ifelse(n() < 5, "other", changed_diagnosis_clean),
-         nice_name_reassigned_collapsed = ifelse(n() < 5, "other", nice_name_reassigned)) %>%
+  group_by(cdc_revision) %>%
+  mutate(changed_diagnosis_collapsed = ifelse(n() < 5, "other", cdc_revision),
+         nice_name_reassigned_collapsed = ifelse(n() < 5, "Other", cdc_nice_name)) %>%
   ungroup()
 filtered_annotated = list.files("Analysis_folders/FilteringVCFfiles/somatic_vcfs_tumor_AF04_F1R21_F2R11_10reads_annotated/",
                                 pattern = "vcf.gz$", full.names = T)
@@ -24,12 +27,12 @@ ordered_filtered_annotated = lapply(clin2$wes, function(v) grep(v, filtered_anno
 cosmic_genes = read.csv("Analysis_folders/Significantly_Mutated_Genes/Census_all_COSMIC.csv")
 robust_regression = readRDS("Analysis_folders/Significantly_Mutated_Genes/Robust_Regression_object_reassigned.rds")
 #standardized residuals are standard deviations so can use to filter genes
-tumor_mutation_burden = read.csv("Analysis_folders/TumorMutationBurden/archive/Somatic_MutationsPerMB_10rFiltered.csv",
+tumor_mutation_burden = read.csv("Analysis_folders/TumorMutationBurden/Somatic_MutationsPerMB_10rFiltered.csv",
                                  row.names = NULL)
 
 # Finding Genes to Plot ---------------------------------------------------
 
-sig_mutated = lapply(names(robust_regression[1:30]), function(nam){
+sig_mutated = lapply(names(robust_regression[1:27]), function(nam){
   robust_regression[[nam]][["Data"]] %>% data.frame(check.names = F) %>%
     mutate_all(unname) %>%
     filter(`Standardized Residuals` > 4) %>%
@@ -53,6 +56,11 @@ filtd = names(filtd[filtd>1])
 
 maf = readRDS("Analysis_folders/Oncoplot/somatic_AF4_FR11_10/1170_somatic_maf.rds")
 maf = read.maf(maf = maf, clinicalData = clin2)
+
+#TSB to remove
+remove_tsb = unique(maf@data$Tumor_Sample_Barcode)[unique(maf@data$Tumor_Sample_Barcode) %notin% clin2$Tumor_Sample_Barcode]
+maf = filterMaf(maf, tsb = as.character(remove_tsb))
+
 #make new columns in MAF for oncoplot
 maf@clinical.data = maf@clinical.data %>%
   data.frame() %>% 

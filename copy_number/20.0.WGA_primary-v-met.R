@@ -4,19 +4,20 @@ library(openxlsx)
 
 #data
 cn_data = readRDS("Analysis_folders/CopyNumberVariation/segmentationFiles/data/copy_number_level-by-length-noy.rds")
-clinical = read.xlsx("Analysis_folders/1.0.Histology_Reassignment/ClinicalLinkagewithFiles_20230731_niceNames.xlsx") %>%
-  filter(is.na(sarcoma), !is.na(somatic_file))
+clinical = read.xlsx("Analysis_folders/1.0.Histology_Reassignment/ClinicalLinkagewithFiles_20240716_niceNames.xlsx") %>%
+  filter(is.na(sarcoma), !is.na(somatic_file), !reviewer_remove)
 clinical$segment_file = str_split(clinical$somatic_file, pattern = "_") %>% 
   do.call(rbind, .) %>% data.frame() %>%
   rowwise() %>% mutate(F = paste0(X1, "_", X4, "_segments.txt")) %>% pull(F)
 clin2 = clinical %>%
   filter(!is.na(somatic_file), #make sure that we have the somatic mutaiton file for the sample
          tumor_germline == "Tumor", #remove germline from clinical file
-         is.na(sarcoma)) %>% #remove 'non-sarcoma' samples
+         is.na(sarcoma),
+         !reviewer_remove) %>% #remove 'non-sarcoma' samples
   mutate(Tumor_Sample_Barcode = gsub("\\..*", "", somatic_file)) %>% #remove everything after "." to get sample ID
-  group_by(changed_diagnosis_clean) %>% #group by the sarcoma histology Andrew collapsed
-  mutate(new_collapsed = ifelse(n() < 5, "other", changed_diagnosis_clean), #if there are less than 5 samples, make new collapsed "other" using the new histology subtype categoties
-         nice_name_collapsed = ifelse(n() < 5, "Other", nice_name_reassigned)) %>% #with a nice name called "Other" for plotting
+  group_by(cdc_revision) %>% #group by the sarcoma histology Andrew collapsed
+  mutate(new_collapsed = ifelse(n() < 5, "other", cdc_revision), #if there are less than 5 samples, make new collapsed "other" using the new histology subtype categoties
+         nice_name_collapsed = ifelse(n() < 5, "Other", cdc_nice_name)) %>% #with a nice name called "Other" for plotting
   ungroup()
 
 #summarising WGA v not
@@ -73,4 +74,9 @@ top_hists_res$`Gastrointestinal Stromal Tumor`$Table %>%
   group_by(Site) %>%
   mutate(Freq = Samples / sum(Samples) * 100)
 
-
+cn_data %>%
+  pivot_wider(names_from = "cn", values_from = "Length", values_fill = 0) %>%
+  mutate(gain_length = GAIN + AMP,
+         loss_length = HOMDEL + HETLOSS,
+         longer = ifelse(gain_length > loss_length, "gain", "loss")) %>%
+  janitor::tabyl(longer)
