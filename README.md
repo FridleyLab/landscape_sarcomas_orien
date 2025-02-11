@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/800545129.svg)](https://doi.org/10.5281/zenodo.14851788)
+
 # Genomic, transcriptomic, and immunogenomic landscape of over 1,300 sarcomas of diverse histology subtypes: A report from the ORIEN collaborative network
 
 This repository contains code to reproduce the results of the manuscript "Genomic, transcriptomic, and immunogenomic landscape of over 1,300 sarcomas of diverse histology subtypes: a report from the ORIEN collaborative network". The manuscript can be obtained from [LINK/DOI].
